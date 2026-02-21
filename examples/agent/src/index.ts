@@ -1,30 +1,17 @@
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { anthropic } from "@ai-sdk/anthropic";
-import { ToolLoopAgent as Agent, stepCountIs, tool } from "ai";
-import { z } from "zod";
-import { start, type Desktop } from "../../../src/index.ts";
+import { ToolLoopAgent as Agent, stepCountIs } from "ai";
 
-import { startViewer, type ViewerHandle } from "./viewer";
+import { start, type Desktop } from "../../../src/index.ts";
 
 interface CliOptions {
   prompt: string;
-  model: string;
-  geometry: string;
-  background: string;
-  maxSteps: number;
-  appCommand: string | null;
-  screenshotPath: string | null;
-  recordPath: string | null;
-  viewerHost: string;
-  viewerPort: number;
-  viewerEnabled: boolean;
-  autoOpenBrowser: boolean;
-  keepAlive: boolean;
 }
 
 interface ImageOutput {
@@ -48,16 +35,23 @@ interface OpenInDesktopResult {
   pid: number;
 }
 
-interface RunInDesktopResult {
-  code: number;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
+interface ViewerServerHandle {
+  url: string;
+  stop: () => Promise<void>;
+}
+
+interface ViewerSocketData {
+  tcp: net.Socket | null;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const exampleRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(__dirname, "../../..");
+const bunRuntime = (globalThis as unknown as { Bun?: any }).Bun;
+
+if (!bunRuntime) {
+  throw new Error("This example must be run with Bun.");
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -65,42 +59,20 @@ function delay(ms: number): Promise<void> {
 
 function usage(): string {
   return [
-    "Usage: bun run src/index.ts [options]",
+    "Usage: bun run src/index.ts [--prompt <text>]",
     "",
-    "Options:",
-    "  --prompt <text>            Prompt for the agent (default: navigate to coder.com Dropbox customer story)",
-    "  --model <id>               Anthropic model (default: claude-opus-4-6)",
-    "  --geometry <WxH>           Desktop geometry (default: 1280x800)",
-    "  --background <color>       X background color (default: #1f252f)",
-    "  --max-steps <n>            Max agent loop steps (default: 100)",
-    "  --app <shell-command>      Optional app command to launch inside desktop",
-    "  --screenshot-path <file>   Save final screenshot PNG",
-    "  --record-path <file>       Save session recording MP4 (default: ./tmp/agent-<timestamp>.mp4)",
-    "  --viewer-host <host>       Host bind for live viewer server (default: 127.0.0.1)",
-    "  --viewer-port <port>       Port bind for live viewer server (default: random)",
-    "  --no-viewer                Disable live VNC viewer server",
-    "  --no-open-browser          Do not auto-open host browser for viewer",
-    "  --keep-alive               Leave desktop running after completion",
-    "  --help                     Show this help"
+    "Behavior:",
+    "  1) Starts a portable desktop session",
+    "  2) Opens a live browser viewer on your host",
+    "  3) Runs the agent for your prompt",
+    "  4) Opens the recorded MP4 in your host browser"
   ].join("\n");
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = {
     prompt:
-      "Use launchBrowser to start a browser, then use computer actions to navigate to the Dropbox customer story page on coder.com. If redirected, recover and get back to that page. Take a screenshot of the Dropbox story page and then briefly confirm success.",
-    model: "claude-opus-4-6",
-    geometry: "1280x800",
-    background: "#1f252f",
-    maxSteps: 100,
-    appCommand: null,
-    screenshotPath: null,
-    recordPath: null,
-    viewerHost: "127.0.0.1",
-    viewerPort: 0,
-    viewerEnabled: true,
-    autoOpenBrowser: true,
-    keepAlive: false
+      "Open a browser and navigate to coder.com. Find the Dropbox customer story and confirm when you are on that page."
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -113,107 +85,6 @@ function parseArgs(argv: readonly string[]): CliOptions {
         }
         options.prompt = value;
         i += 1;
-        break;
-      }
-      case "--model": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--model requires a value");
-        }
-        options.model = value;
-        i += 1;
-        break;
-      }
-      case "--geometry": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--geometry requires a value");
-        }
-        options.geometry = value;
-        i += 1;
-        break;
-      }
-      case "--background": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--background requires a value");
-        }
-        options.background = value;
-        i += 1;
-        break;
-      }
-      case "--max-steps": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--max-steps requires a value");
-        }
-        const parsed = Number.parseInt(value, 10);
-        if (!Number.isFinite(parsed) || parsed < 1) {
-          throw new Error(`invalid --max-steps value: ${value}`);
-        }
-        options.maxSteps = parsed;
-        i += 1;
-        break;
-      }
-      case "--app": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--app requires a value");
-        }
-        options.appCommand = value;
-        i += 1;
-        break;
-      }
-      case "--screenshot-path": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--screenshot-path requires a value");
-        }
-        options.screenshotPath = value;
-        i += 1;
-        break;
-      }
-      case "--record-path": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--record-path requires a value");
-        }
-        options.recordPath = value;
-        i += 1;
-        break;
-      }
-      case "--viewer-host": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--viewer-host requires a value");
-        }
-        options.viewerHost = value;
-        i += 1;
-        break;
-      }
-      case "--viewer-port": {
-        const value = argv[i + 1];
-        if (!value) {
-          throw new Error("--viewer-port requires a value");
-        }
-        const parsed = Number.parseInt(value, 10);
-        if (!Number.isFinite(parsed) || parsed < 0 || parsed > 65535) {
-          throw new Error(`invalid --viewer-port value: ${value}`);
-        }
-        options.viewerPort = parsed;
-        i += 1;
-        break;
-      }
-      case "--no-viewer": {
-        options.viewerEnabled = false;
-        break;
-      }
-      case "--no-open-browser": {
-        options.autoOpenBrowser = false;
-        break;
-      }
-      case "--keep-alive": {
-        options.keepAlive = true;
         break;
       }
       case "--help": {
@@ -229,19 +100,38 @@ function parseArgs(argv: readonly string[]): CliOptions {
   return options;
 }
 
-function parseGeometry(geometry: string): { width: number; height: number } {
-  const match = /^(\d+)x(\d+)$/.exec(geometry);
-  if (!match) {
-    throw new Error(`invalid geometry: ${geometry}. expected WxH, e.g. 1280x800`);
-  }
+async function loadEnvFileIfPresent(filePath: string): Promise<void> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
 
-  const width = Number.parseInt(match[1], 10);
-  const height = Number.parseInt(match[2], 10);
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 64 || height < 64) {
-    throw new Error(`invalid geometry values: ${geometry}`);
-  }
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0) {
+        continue;
+      }
 
-  return { width, height };
+      const key = trimmed.slice(0, eq).trim();
+      if (!key || process.env[key] !== undefined) {
+        continue;
+      }
+
+      let value = trimmed.slice(eq + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+
+      process.env[key] = value;
+    }
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code !== "ENOENT") {
+      throw err;
+    }
+  }
 }
 
 async function isExecutable(filePath: string): Promise<boolean> {
@@ -261,6 +151,7 @@ async function resolveExecutable(candidates: readonly string[]): Promise<string 
 
   for (const candidate of candidates) {
     if (candidate.includes("/")) {
+      // eslint-disable-next-line no-await-in-loop
       if (await isExecutable(candidate)) {
         return candidate;
       }
@@ -331,99 +222,231 @@ async function openInDesktop(
   return { pid: child.pid };
 }
 
-async function runInDesktop(
-  desktop: Desktop,
-  command: string,
-  args: string[],
-  options: { cwd?: string; timeoutMs?: number } = {}
-): Promise<RunInDesktopResult> {
-  const child = spawn(command, args, {
-    cwd: options.cwd || process.cwd(),
-    env: desktop.env,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+async function launchDesktopBrowser(desktop: Desktop): Promise<{ browser: string; pid: number }> {
+  const browserPath = await resolveExecutable([
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "firefox"
+  ]);
 
-  let stdout = "";
-  let stderr = "";
-  if (child.stdout) {
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-  }
-  if (child.stderr) {
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
+  if (!browserPath) {
+    throw new Error("no browser found in PATH (tried: chrome/chromium/firefox)");
   }
 
-  let timedOut = false;
-  let timer: NodeJS.Timeout | null = null;
-  if (options.timeoutMs && options.timeoutMs > 0) {
-    timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    }, options.timeoutMs);
+  const args: string[] = ["--new-window"];
+  const baseName = path.basename(browserPath).toLowerCase();
+  if (baseName.includes("chrome") || baseName.includes("chromium")) {
+    const profileDir = path.join(desktop.sessionDir, "profiles", `agent-browser-${Date.now()}`);
+    await fs.rm(profileDir, { recursive: true, force: true });
+    await fs.mkdir(profileDir, { recursive: true });
+    args.push(`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check");
   }
 
-  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-  });
-
-  if (timer) {
-    clearTimeout(timer);
-  }
-  if (timedOut) {
-    throw new Error(`${command} timed out after ${options.timeoutMs}ms`);
-  }
-
+  const launched = await openInDesktop(desktop, browserPath, args, { cwd: repoRoot });
   return {
-    code: typeof exit.code === "number" ? exit.code : -1,
-    signal: exit.signal,
-    stdout,
-    stderr
+    browser: browserPath,
+    pid: launched.pid
   };
 }
 
-async function loadEnvFileIfPresent(filePath: string): Promise<void> {
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) {
-        continue;
+function buildViewerHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>portabledesktop live viewer</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #141820;
+        color: #e8edf2;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       }
-
-      const eq = trimmed.indexOf("=");
-      if (eq <= 0) {
-        continue;
+      #topbar {
+        box-sizing: border-box;
+        height: 42px;
+        padding: 10px 14px;
+        border-bottom: 1px solid #2a3342;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
       }
-
-      const key = trimmed.slice(0, eq).trim();
-      if (!key || process.env[key] !== undefined) {
-        continue;
+      #viewer {
+        width: 100%;
+        height: calc(100% - 42px);
+        overflow: hidden;
       }
+    </style>
+  </head>
+  <body>
+    <div id="topbar">connecting...</div>
+    <div id="viewer"></div>
+    <script type="module" src="/viewer.js"></script>
+  </body>
+</html>`;
+}
 
-      let value = trimmed.slice(eq + 1).trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
+function formatBuildErrors(logs: readonly unknown[]): string {
+  return logs
+    .map((entry) => {
+      const log = entry as {
+        level?: string;
+        message?: string;
+        position?: { file?: string; line?: number; column?: number };
+      };
+      if (log.position) {
+        return `${log.level || "error"}: ${log.message || "build error"} (${log.position.file || "unknown"}:${String(
+          log.position.line ?? "?"
+        )}:${String(log.position.column ?? "?")})`;
       }
+      return `${log.level || "error"}: ${log.message || "build error"}`;
+    })
+    .join("\n");
+}
 
-      process.env[key] = value;
-    }
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code !== "ENOENT") {
-      throw err;
-    }
+async function buildViewerClientScript(): Promise<string> {
+  const entryPath = path.join(exampleRoot, "viewer-client.entry.js");
+
+  const result = await bunRuntime.build({
+    entrypoints: [entryPath],
+    target: "browser",
+    format: "esm",
+    minify: true,
+    write: false
+  });
+
+  if (!result.success) {
+    throw new Error(`failed to bundle viewer client:\n${formatBuildErrors(result.logs)}`);
   }
+
+  const output =
+    result.outputs.find((item: { path: string }) => item.path.endsWith(".js")) || result.outputs[0];
+  if (!output) {
+    throw new Error("viewer bundle produced no output files");
+  }
+
+  return await output.text();
+}
+
+async function startViewerServer(vncPort: number): Promise<ViewerServerHandle> {
+  const viewerScript = await buildViewerClientScript();
+  const sockets = new Set<net.Socket>();
+
+  const server = bunRuntime.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req: Request, srv: { upgrade: (request: Request, options?: unknown) => boolean }) {
+      const url = new URL(req.url);
+
+      if (url.pathname === "/ws") {
+        if (srv.upgrade(req, { data: { tcp: null } })) {
+          return;
+        }
+        return new Response("upgrade failed", { status: 500 });
+      }
+
+      if (url.pathname === "/" || url.pathname === "/index.html") {
+        return new Response(buildViewerHtml(), {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store"
+          }
+        });
+      }
+
+      if (url.pathname === "/viewer.js") {
+        return new Response(viewerScript, {
+          headers: {
+            "content-type": "text/javascript; charset=utf-8",
+            "cache-control": "no-store"
+          }
+        });
+      }
+
+      if (url.pathname === "/healthz") {
+        return new Response("ok", {
+          headers: {
+            "content-type": "text/plain; charset=utf-8"
+          }
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    },
+    websocket: {
+      open(ws: { data: ViewerSocketData; send: (data: Buffer) => void; close: () => void }) {
+        const tcp = net.connect({ host: "127.0.0.1", port: vncPort });
+        ws.data.tcp = tcp;
+        sockets.add(tcp);
+
+        tcp.on("data", (chunk: Buffer) => {
+          ws.send(chunk);
+        });
+
+        tcp.on("error", () => {
+          sockets.delete(tcp);
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+        });
+
+        tcp.on("close", () => {
+          sockets.delete(tcp);
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+        });
+      },
+      message(ws: { data: ViewerSocketData }, message: unknown) {
+        const tcp = ws.data.tcp;
+        if (!tcp || tcp.destroyed) {
+          return;
+        }
+
+        if (typeof message === "string") {
+          tcp.write(message, "utf8");
+          return;
+        }
+
+        if (message instanceof ArrayBuffer) {
+          tcp.write(Buffer.from(message));
+          return;
+        }
+
+        if (ArrayBuffer.isView(message)) {
+          tcp.write(Buffer.from(message.buffer, message.byteOffset, message.byteLength));
+        }
+      },
+      close(ws: { data: ViewerSocketData }) {
+        const tcp = ws.data.tcp;
+        ws.data.tcp = null;
+        if (tcp) {
+          sockets.delete(tcp);
+          tcp.destroy();
+        }
+      }
+    }
+  });
+
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    stop: async () => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      sockets.clear();
+      server.stop(true);
+    }
+  };
 }
 
 class DesktopComputer {
@@ -582,7 +605,7 @@ class DesktopComputer {
 
         const amount = Math.max(1, Math.round(input.scroll_amount ?? 3));
         const direction = input.scroll_direction ?? "down";
-        const button =
+        const delta =
           direction === "up"
             ? { dx: 0, dy: -amount }
             : direction === "down"
@@ -591,7 +614,7 @@ class DesktopComputer {
                 ? { dx: -amount, dy: 0 }
                 : { dx: amount, dy: 0 };
 
-        await this.desktop.scroll(button.dx, button.dy);
+        await this.desktop.scroll(delta.dx, delta.dy);
         return { kind: "text", text: `scrolled ${direction} by ${amount}` };
       }
       case "wait": {
@@ -604,8 +627,7 @@ class DesktopComputer {
         return { kind: "image", data, mediaType: "image/png" };
       }
       case "zoom": {
-        const region = input.region;
-        const data = await this.capturePng(region);
+        const data = await this.capturePng(input.region);
         return { kind: "image", data, mediaType: "image/png" };
       }
       default: {
@@ -613,10 +635,6 @@ class DesktopComputer {
         throw new Error(`unsupported action: ${String(exhaustiveCheck)}`);
       }
     }
-  }
-
-  async screenshotBase64(): Promise<string> {
-    return this.capturePng();
   }
 }
 
@@ -628,223 +646,82 @@ async function main(): Promise<void> {
   }
 
   const options = parseArgs(process.argv.slice(2));
-  const { width, height } = parseGeometry(options.geometry);
 
   const desktop = await start({
-    geometry: options.geometry,
-    background: { color: options.background },
+    geometry: "1280x800",
+    background: { color: "#1f252f" },
     openbox: true,
     detached: false
   });
 
-  let shouldStopDesktop = !options.keepAlive;
-  let viewerHandle: ViewerHandle | null = null;
-  const recordingPath = path.resolve(options.recordPath ?? path.join(exampleRoot, "tmp", `agent-${Date.now()}.mp4`));
+  const recordingPath = path.resolve(path.join(exampleRoot, "tmp", `agent-${Date.now()}.mp4`));
   await fs.mkdir(path.dirname(recordingPath), { recursive: true });
+
   const recordingHandle = await desktop.record({
     file: recordingPath,
     idleSpeedup: 20,
     idleMinDurationSec: 0.35,
     idleNoiseTolerance: "-38dB"
   });
+
+  const viewer = await startViewerServer(desktop.port);
+  openHostBrowser(viewer.url);
+
+  const launchedBrowser = await launchDesktopBrowser(desktop);
+  await delay(1200);
+
+  process.stdout.write(`viewer: ${viewer.url}\n`);
+  process.stdout.write(`desktop browser: ${launchedBrowser.browser}\n`);
   process.stdout.write(`recording: ${recordingPath}\n`);
 
-  try {
-    if (options.viewerEnabled) {
-      viewerHandle = await startViewer(desktop, {
-        host: options.viewerHost,
-        port: options.viewerPort,
-        clientScriptPath: path.join(exampleRoot, "dist", "viewer-client.js")
-      });
-      const viewerUrl = viewerHandle.url;
-      process.stdout.write(`viewer: ${viewerUrl}\n`);
-      if (options.autoOpenBrowser) {
-        openHostBrowser(viewerUrl);
-      }
-    }
+  const computer = new DesktopComputer(desktop, 1280, 800);
 
-    if (options.appCommand) {
-      await openInDesktop(desktop, "bash", ["-lc", options.appCommand], { cwd: repoRoot });
-      await delay(1200);
-    }
-
-    const computer = new DesktopComputer(desktop, width, height);
-
-    const browserCandidates = [
-      "google-chrome",
-      "google-chrome-stable",
-      "chromium",
-      "chromium-browser",
-      "firefox"
-    ] as const;
-    const defaultBrowserPath = await resolveExecutable(browserCandidates);
-
-    const computerTool = anthropic.tools.computer_20251124<ComputerToolOutput>({
-      displayWidthPx: width,
-      displayHeightPx: height,
-      displayNumber: desktop.display,
-      enableZoom: true,
-      execute: async (input) => computer.execute(input),
-      toModelOutput({ output }) {
-        if (output.kind === "image") {
-          return {
-            type: "content",
-            value: [
-              {
-                type: "image-data",
-                data: output.data,
-                mediaType: output.mediaType
-              }
-            ]
-          };
-        }
-
+  const computerTool = anthropic.tools.computer_20251124<ComputerToolOutput>({
+    displayWidthPx: 1280,
+    displayHeightPx: 800,
+    displayNumber: desktop.display,
+    enableZoom: true,
+    execute: async (input) => computer.execute(input),
+    toModelOutput({ output }) {
+      if (output.kind === "image") {
         return {
           type: "content",
           value: [
             {
-              type: "text",
-              text: output.text
+              type: "image-data",
+              data: output.data,
+              mediaType: output.mediaType
             }
           ]
         };
       }
-    });
 
-    const launchBrowserTool = tool({
-      description:
-        "Launch a desktop web browser in the current X session. After launching, use computer actions to navigate/type/click.",
-      inputSchema: z.object({
-        browser: z.enum(["auto", "chrome", "chromium", "firefox"]).optional().default("auto"),
-        newWindow: z.boolean().optional().default(true)
-      }),
-      execute: async ({ browser, newWindow }) => {
-        const requested = browser ?? "auto";
-        const chosenPath =
-          requested === "auto"
-            ? defaultBrowserPath
-            : await resolveExecutable(
-                requested === "chrome"
-                  ? ["google-chrome", "google-chrome-stable"]
-                  : requested === "chromium"
-                    ? ["chromium", "chromium-browser"]
-                    : ["firefox"]
-              );
+      return {
+        type: "content",
+        value: [
+          {
+            type: "text",
+            text: output.text
+          }
+        ]
+      };
+    }
+  });
 
-        if (!chosenPath) {
-          throw new Error(
-            `no supported browser found in PATH. looked for: ${[...browserCandidates].join(", ")}`
-          );
-        }
+  const agent = new Agent({
+    model: anthropic("claude-opus-4-6"),
+    instructions:
+      "Use the computer tool to complete the user prompt in the already-open browser window. Prefer direct actions and keep steps concise.",
+    stopWhen: stepCountIs(100),
+    tools: {
+      computer: computerTool
+    }
+  });
 
-        const baseName = path.basename(chosenPath);
-        const browserArgs: string[] = [];
-        if (newWindow) {
-          browserArgs.push("--new-window");
-        }
-
-        if (baseName.includes("chrome") || baseName.includes("chromium")) {
-          const profileDir = path.join(desktop.sessionDir, "profiles", `browser-${Date.now()}`);
-          await fs.rm(profileDir, { recursive: true, force: true });
-          await fs.mkdir(profileDir, { recursive: true });
-          browserArgs.push(`--user-data-dir=${profileDir}`);
-          browserArgs.push("--no-first-run", "--no-default-browser-check");
-        }
-
-        const launched = await openInDesktop(desktop, chosenPath, browserArgs, { cwd: repoRoot });
-        await delay(1200);
-
-        return {
-          ok: true,
-          browser: chosenPath,
-          pid: launched.pid
-        };
-      }
-    });
-
-    const launchAppTool = tool({
-      description: "Launch any GUI application in the desktop session.",
-      inputSchema: z.object({
-        command: z.string().min(1),
-        args: z.array(z.string()).optional().default([])
-      }),
-      execute: async ({ command, args }) => {
-        const launched = await openInDesktop(desktop, command, args, { cwd: repoRoot });
-        return {
-          ok: true,
-          pid: launched.pid,
-          command,
-          args
-        };
-      }
-    });
-
-    const runShellTool = tool({
-      description:
-        "Run a shell command in the desktop environment and return stdout/stderr. Useful for diagnostics or app launching.",
-      inputSchema: z.object({
-        command: z.string().min(1),
-        timeoutMs: z.number().int().min(100).max(120000).optional().default(20000)
-      }),
-      execute: async ({ command, timeoutMs }) => {
-        const result = await runInDesktop(desktop, "bash", ["-lc", command], {
-          timeoutMs
-        });
-
-        return {
-          code: result.code,
-          stdout: result.stdout.slice(0, 4000),
-          stderr: result.stderr.slice(0, 4000)
-        };
-      }
-    });
-
-    const agent = new Agent({
-      model: anthropic(options.model),
-      instructions:
-        "You control a remote Linux desktop through tools. Use launchBrowser for web tasks, then computer for mouse/keyboard/screenshot. Be concise and use the fewest actions needed.",
-      stopWhen: stepCountIs(options.maxSteps),
-      tools: {
-        computer: computerTool,
-        launchBrowser: launchBrowserTool,
-        launchApp: launchAppTool,
-        runShell: runShellTool
-      }
-    });
-
-    process.stdout.write(`model: ${options.model}\n`);
-    process.stdout.write(`display: :${desktop.display}\n`);
-    process.stdout.write(`vnc: 127.0.0.1:${desktop.port}\n`);
-
-    const result = await agent.generate({
-      prompt: options.prompt,
-      experimental_onToolCallStart(event) {
-        process.stdout.write(`[tool:start] ${event.toolCall.toolName}\n`);
-      },
-      experimental_onToolCallFinish(event) {
-        if (event.success) {
-          process.stdout.write(`[tool:done] ${event.toolCall.toolName}\n`);
-        } else {
-          process.stdout.write(`[tool:error] ${event.toolCall.toolName}: ${String(event.error)}\n`);
-        }
-      }
-    });
-
+  try {
+    const result = await agent.generate({ prompt: options.prompt });
     process.stdout.write("\nagent output:\n");
     process.stdout.write(`${result.text || "(no text output)"}\n`);
-
-    if (options.screenshotPath) {
-      const finalShot = await computer.screenshotBase64();
-      const outPath = path.resolve(options.screenshotPath);
-      await fs.mkdir(path.dirname(outPath), { recursive: true });
-      await fs.writeFile(outPath, Buffer.from(finalShot, "base64"));
-      process.stdout.write(`saved screenshot: ${outPath}\n`);
-    }
-
-    if (options.keepAlive) {
-      shouldStopDesktop = false;
-      process.stdout.write("desktop kept alive (--keep-alive). Stop manually when done.\n");
-    }
   } finally {
     try {
       await recordingHandle.stop();
@@ -854,13 +731,12 @@ async function main(): Promise<void> {
       process.stderr.write(`warning: failed to finalize recording: ${message}\n`);
     }
 
-    if (viewerHandle) {
-      await viewerHandle.stop();
-    }
+    await viewer.stop();
+    await desktop.kill({ cleanup: true });
 
-    if (shouldStopDesktop) {
-      await desktop.kill();
-    }
+    const recordingUrl = pathToFileURL(recordingPath).toString();
+    openHostBrowser(recordingUrl);
+    process.stdout.write(`opened recording: ${recordingUrl}\n`);
   }
 }
 

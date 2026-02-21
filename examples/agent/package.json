@@ -4,18 +4,14 @@
   "type": "module",
   "packageManager": "bun@1.3.2",
   "scripts": {
-    "build:viewer": "bun build viewer-client.entry.js --target browser --format esm --minify --outfile dist/viewer-client.js",
     "typecheck": "bunx tsc --noEmit",
-    "start": "bun run build:viewer && bun run src/index.ts",
-    "watch": "bun run build:viewer && bun run src/index.ts --prompt \"Use launchBrowser to start a browser, then use computer actions to navigate to the Dropbox customer story page on coder.com, keep the page visible, and briefly confirm once loaded.\" --max-steps 100",
-    "smoke": "bun run src/index.ts --no-viewer --prompt \"Use the computer tool to take one screenshot and respond with exactly: READY\" --max-steps 6 --screenshot-path ./tmp/smoke-final.png"
+    "start": "bun run src/index.ts",
+    "smoke": "bun run src/index.ts --prompt \"Open coder.com and confirm the homepage title.\""
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
     "@novnc/novnc": "1.5.0",
-    "ai": "^6.0.97",
-    "ws": "^8.18.3",
-    "zod": "^4.3.6"
+    "ai": "^6.0.97"
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
