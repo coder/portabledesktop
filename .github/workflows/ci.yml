@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.2"
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run lint
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build Artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build.sh
+
+  runtime-compat:
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Configure Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Runtime Distro Matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/matrix.sh \
+            --package build \
+            --base-port 17001 \
+            --timeout-seconds 60 \
+            --image ubuntu:24.04 \
+            --image ubuntu:22.04 \
+            --image debian:12-slim \
+            --image debian:11-slim \
+            --image fedora:41 \
+            --image rockylinux:9 \
+            --image almalinux:9 \
+            --image oraclelinux:9 \
+            --image opensuse/leap:15.6 \
+            --image archlinux:latest

@@ -1,0 +1,10 @@
+assets
+result
+node_modules
+dist
+tmp
+*.tgz
+.env.local
+.env
+.env.*
+!.env.example
