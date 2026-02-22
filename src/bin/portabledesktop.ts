@@ -5,8 +5,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { Desktop, start } from "../src/index";
-import type { DesktopState } from "../src/session";
+import { Desktop, start } from "../index";
+import type { DesktopState } from "../session";
 
 const BOOLEAN_FLAGS = new Set(["json", "no-openbox", "foreground", "allow-non-zero"]);
 

@@ -88,10 +88,19 @@
           cmakeFlags = (old.cmakeFlags or [ ]) ++ [
             "-DENABLE_GNUTLS=OFF"
           ];
-          postBuild = lib.replaceStrings
-            [ "--with-xkb-bin-directory=${pkgs.xkbcomp}/bin \\" ]
-            [ "--with-xkb-bin-directory= \\" ]
-            (old.postBuild or "");
+          postBuild =
+            let
+              postBuildXkb = lib.replaceStrings
+                [ "--with-xkb-bin-directory=${pkgs.xkbcomp}/bin \\" ]
+                [ "--with-xkb-bin-directory= \\" ]
+                (old.postBuild or "");
+            in
+            # Keep runtime DRI paths enabled so hosts with proper GPU userspace
+            # + kernel device exposure can attempt hardware-backed GL.
+            lib.replaceStrings
+              [ "--disable-dri --disable-dri2 --disable-dri3 --enable-glx \\" ]
+              [ "--enable-dri --enable-dri2 --enable-dri3 --enable-glx \\" ]
+              postBuildXkb;
         });
         runtimeFfmpegRecorder = pkgs.ffmpeg-full.override {
           # Start from an empty feature profile and only enable what recording

@@ -31,8 +31,8 @@
       "import": "./dist/index.js"
     },
     "./client": {
-      "types": "./dist/client.d.ts",
-      "import": "./dist/client.js"
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -52,13 +52,13 @@
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "lint": "bun run typecheck",
-    "build:js": "bun build src/index.ts --outfile dist/index.js --target=node --format=esm && bun build src/client.ts --outfile dist/client.js --target=browser --format=esm --packages=external && bun build bin/portabledesktop.ts --outfile dist/portabledesktop.js --target=node --format=esm",
+    "build:js": "bun build src/index.ts --outfile dist/index.js --target=node --format=esm && bun build src/client/index.ts --outfile dist/client/index.js --target=browser --format=esm --packages=external && bun build src/bin/portabledesktop.ts --outfile dist/portabledesktop.js --target=node --format=esm",
     "build:types": "bunx tsc -p tsconfig.types.json",
-    "build:binary": "bun build bin/portabledesktop.ts --compile --outfile dist/portabledesktop",
+    "build:binary": "bun build src/bin/portabledesktop.ts --compile --outfile dist/portabledesktop",
     "build": "rm -rf dist && mkdir -p dist && bun run lint && bun run build:js && bun run build:types",
     "test": "bun run build",
     "bundle:assets": "./scripts/bundle-assets.sh",
-    "dev:cli": "bun run bin/portabledesktop.ts",
+    "dev:cli": "bun run src/bin/portabledesktop.ts",
     "prepack": "bun run bundle:assets && bun run build"
   },
   "dependencies": {
