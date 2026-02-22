@@ -229,6 +229,12 @@
             includeInStatic = false;
           }
           {
+            name = "xwallpaper";
+            attrPath = [ "xwallpaper" ];
+            requiredStatic = false;
+            includeInStatic = false;
+          }
+          {
             name = "xdotool";
             attrPath = [ "xdotool" ];
             requiredStatic = false;
@@ -860,6 +866,7 @@
                   ! -name 'xkbcomp' \
                   ! -name 'openbox' \
                   ! -name 'xsetroot' \
+                  ! -name 'xwallpaper' \
                   ! -name 'xdotool' \
                   ! -name 'ffmpeg' \
                   ! -name '.openbox-wrapped' \
@@ -1061,6 +1068,7 @@
               queue_runtime_dep "$runtimePayloadRoot/bin/xkbcomp"
               queue_runtime_dep "$runtimePayloadRoot/bin/openbox"
               queue_runtime_dep "$runtimePayloadRoot/bin/xsetroot"
+              queue_runtime_dep "$runtimePayloadRoot/bin/xwallpaper"
               queue_runtime_dep "$runtimePayloadRoot/bin/xdotool"
               queue_runtime_dep "$runtimePayloadRoot/bin/ffmpeg"
               queue_runtime_dep "$runtimePayloadRoot/bin/.openbox-wrapped"
@@ -1210,7 +1218,7 @@
                 chmod 0755 "$runtimePayloadRoot/bin/openbox"
               fi
 
-              for tool_name in ffmpeg xsetroot xdotool; do
+              for tool_name in ffmpeg xsetroot xwallpaper xdotool; do
                 tool_path="$runtimePayloadRoot/bin/$tool_name"
                 tool_real_path="$runtimePayloadRoot/bin/$tool_name.real"
 

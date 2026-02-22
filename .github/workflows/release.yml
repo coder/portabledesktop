@@ -125,7 +125,7 @@ jobs:
 
           cp result/output.tar "${out_dir}/portabledesktop-v${version}-linux-${arch}-runtime.tar"
           cp result/manifest.json "${out_dir}/portabledesktop-v${version}-linux-${arch}-manifest.json"
-          cp dist/portabledesktop "${out_dir}/portabledesktop-v${version}-linux-${arch}"
+          cp dist/bin/portabledesktop "${out_dir}/portabledesktop-v${version}-linux-${arch}"
           chmod 0755 "${out_dir}/portabledesktop-v${version}-linux-${arch}"
 
           (

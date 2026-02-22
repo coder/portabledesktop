@@ -2,32 +2,92 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Command } from "commander";
+import WebSocket, { WebSocketServer, type RawData } from "ws";
 
-import { Desktop, start } from "../index";
-import type { DesktopState } from "../session";
-
-const BOOLEAN_FLAGS = new Set(["json", "no-openbox", "foreground", "allow-non-zero"]);
+import { Desktop, createDesktop } from "../index";
+import type { BackgroundImageMode, DesktopSizeMode, DesktopState } from "../session";
 
 const defaultStateFile =
   process.env.PORTABLEDESKTOP_STATE_FILE || path.join(os.homedir(), ".cache", "portabledesktop", "session.json");
 
-interface ParsedArgs {
-  positional: string[];
-  flags: Map<string, string | boolean>;
+interface StateFileOption {
+  stateFile?: string;
 }
 
-interface RecordingState {
-  pid: number;
-  file: string;
-  startedAt: string;
+interface UpCommandOptions extends StateFileOption {
+  json?: boolean;
+  foreground?: boolean;
+  openbox?: boolean;
+  xvncArg?: string[];
+  runtimeDir?: string;
+  sessionDir?: string;
+  display?: string;
+  port?: string;
+  geometry?: string;
+  depth?: string;
+  dpi?: number;
+  desktopSizeMode?: DesktopSizeMode;
+  background?: string;
+  backgroundImage?: string;
+  backgroundMode?: BackgroundImageMode;
 }
+
+interface InfoCommandOptions extends StateFileOption {
+  json?: boolean;
+}
+
+interface OpenCommandOptions extends StateFileOption {
+  cwd?: string;
+}
+
+interface RunCommandOptions extends StateFileOption {
+  cwd?: string;
+  timeoutMs?: number;
+  json?: boolean;
+  allowNonZero?: boolean;
+}
+
+interface CursorCommandOptions extends StateFileOption {
+  json?: boolean;
+}
+
+interface BackgroundImageCommandOptions extends StateFileOption {
+  mode?: BackgroundImageMode;
+}
+
+interface ScreenshotCommandOptions extends StateFileOption {
+  file?: string;
+  json?: boolean;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  scaleToGeometry?: boolean;
+  timeoutMs?: number;
+}
+
+interface RecordCommandOptions extends StateFileOption {
+  fps?: number;
+}
+
+interface ViewerCommandOptions extends StateFileOption {
+  host?: string;
+  port?: number;
+  scale?: ViewerScale;
+  open?: boolean;
+}
+
+type ViewerScale = "fit" | "1:1";
 
 interface StoredDesktopState extends DesktopState {
   stateFile: string;
   startedAt: string;
-  recording: RecordingState | null;
 }
 
 interface OpenCommandResult {
@@ -43,47 +103,6 @@ interface CommandResult {
   stderr: string;
 }
 
-function parseOptionValue(args: readonly string[], index: number, optionName: string): string {
-  if (index + 1 >= args.length || args[index + 1].startsWith("--")) {
-    throw new Error(`${optionName} requires a value`);
-  }
-  return args[index + 1];
-}
-
-function parseKeyValueArgs(args: readonly string[]): ParsedArgs {
-  const positional: string[] = [];
-  const flags = new Map<string, string | boolean>();
-
-  for (let i = 0; i < args.length; i += 1) {
-    const token = args[i];
-    if (!token.startsWith("--")) {
-      positional.push(token);
-      continue;
-    }
-
-    const key = token.slice(2);
-    if (BOOLEAN_FLAGS.has(key)) {
-      flags.set(key, true);
-      continue;
-    }
-
-    const value = parseOptionValue(args, i, token);
-    flags.set(key, value);
-    i += 1;
-  }
-
-  return { positional, flags };
-}
-
-function hasFlag(args: ParsedArgs, name: string): boolean {
-  return args.flags.get(name) === true;
-}
-
-function getOption(args: ParsedArgs, name: string): string | undefined {
-  const value = args.flags.get(name);
-  return typeof value === "string" ? value : undefined;
-}
-
 function parseInteger(value: string, label: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) {
@@ -92,13 +111,179 @@ function parseInteger(value: string, label: string): number {
   return parsed;
 }
 
-function parseIntegerOption(args: ParsedArgs, name: string): number | undefined {
-  const value = getOption(args, name);
-  return value === undefined ? undefined : parseInteger(value, `--${name}`);
+function parseIntegerOptionValue(name: string): (value: string) => number {
+  return (value: string): number => parseInteger(value, `--${name}`);
 }
 
-function stateFileFrom(args: ParsedArgs): string {
-  return path.resolve(getOption(args, "state-file") || defaultStateFile);
+function parseDesktopSizeMode(value: string): DesktopSizeMode {
+  const normalized = value.toLowerCase();
+  if (normalized === "fixed" || normalized === "dynamic") {
+    return normalized;
+  }
+  throw new Error(`invalid desktop size mode: ${value}. expected fixed|dynamic`);
+}
+
+function parseDesktopSizeModeOption(value: string): DesktopSizeMode {
+  return parseDesktopSizeMode(value);
+}
+
+function parseViewerScaleOption(value: string): ViewerScale {
+  const normalized = value.toLowerCase();
+  if (normalized === "fit") {
+    return "fit";
+  }
+  if (normalized === "1:1" || normalized === "1x1" || normalized === "native") {
+    return "1:1";
+  }
+  throw new Error(`invalid viewer scale: ${value}. expected fit|1:1`);
+}
+
+function parseBackgroundImageModeOption(value: string): BackgroundImageMode {
+  const normalized = value.toLowerCase();
+  switch (normalized) {
+    case "center":
+    case "fill":
+    case "fit":
+    case "stretch":
+    case "tile":
+      return normalized;
+    default:
+      throw new Error(`invalid background mode: ${value}. expected center|fill|fit|stretch|tile`);
+  }
+}
+
+function resolveStateFilePath(stateFile?: string): string {
+  return path.resolve(stateFile || defaultStateFile);
+}
+
+function parseScreenshotRegion(options: ScreenshotCommandOptions): [number, number, number, number] | undefined {
+  const providedCount = [options.x, options.y, options.width, options.height].filter((value) => value !== undefined)
+    .length;
+  if (providedCount === 0) {
+    return undefined;
+  }
+  if (providedCount !== 4) {
+    throw new Error("screenshot region requires --x, --y, --width, and --height together");
+  }
+
+  const x = options.x ?? 0;
+  const y = options.y ?? 0;
+  const width = options.width ?? 0;
+  const height = options.height ?? 0;
+  if (width <= 0 || height <= 0) {
+    throw new Error("screenshot --width and --height must be positive integers");
+  }
+
+  return [x, y, x + width, y + height];
+}
+
+function viewerHtml(config: { scale: ViewerScale; desktopSizeMode: DesktopSizeMode }): string {
+  const serializedConfig = JSON.stringify(config);
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>portabledesktop viewer</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #12161e;
+        color: #e7ebf3;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      #topbar {
+        box-sizing: border-box;
+        height: 42px;
+        padding: 10px 14px;
+        border-bottom: 1px solid #2a3342;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+      }
+      #viewer {
+        width: 100%;
+        height: calc(100% - 42px);
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="topbar">connecting...</div>
+    <div id="viewer"></div>
+    <script>globalThis.PORTABLEDESKTOP_VIEWER_CONFIG = ${serializedConfig};</script>
+    <script type="module" src="/viewer.js"></script>
+  </body>
+</html>`;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loadViewerClientScript(): Promise<string> {
+  const currentFilePath = fileURLToPath(import.meta.url);
+  const currentDir = path.dirname(currentFilePath);
+  const executableDir = path.dirname(process.execPath);
+
+  const bundledCandidates = [
+    path.join(currentDir, "viewer-client.js"),
+    path.join(executableDir, "viewer-client.js"),
+    path.resolve(currentDir, "..", "..", "dist", "bin", "viewer-client.js"),
+    path.resolve(process.cwd(), "dist", "bin", "viewer-client.js"),
+    path.resolve(currentDir, "..", "..", "dist", "viewer-client.js"),
+    path.resolve(process.cwd(), "dist", "viewer-client.js")
+  ];
+
+  for (const candidate of bundledCandidates) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await pathExists(candidate)) {
+      // eslint-disable-next-line no-await-in-loop
+      return await fs.readFile(candidate, "utf8");
+    }
+  }
+
+  throw new Error(
+    "missing viewer client bundle (dist/bin/viewer-client.js). run the build first or install the published package with dist assets."
+  );
+}
+
+function spawnDetachedIgnoreErrors(command: string, args: string[]): void {
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.once("error", () => {
+    // ignore browser launcher errors (for example: command not in PATH)
+  });
+  child.unref();
+}
+
+function openHostBrowser(url: string): void {
+  try {
+    if (process.platform === "darwin") {
+      spawnDetachedIgnoreErrors("open", [url]);
+      return;
+    }
+
+    if (process.platform === "win32") {
+      spawnDetachedIgnoreErrors("cmd", ["/c", "start", "", url]);
+      return;
+    }
+
+    spawnDetachedIgnoreErrors("xdg-open", [url]);
+  } catch {
+    // ignore browser open failures
+  }
+}
+
+function notFound(res: ServerResponse): void {
+  res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  res.end("not found");
 }
 
 function nowIso(): string {
@@ -109,51 +294,17 @@ function desktopFromState(state: DesktopState): Desktop {
   return new Desktop({
     runtimeDir: state.runtimeDir,
     display: state.display,
-    port: state.port,
+    vncPort: state.vncPort,
     geometry: state.geometry,
     depth: state.depth,
+    dpi: state.dpi,
+    desktopSizeMode: state.desktopSizeMode,
     sessionDir: state.sessionDir,
     cleanupSessionDirOnStop: state.cleanupSessionDirOnStop,
     xvncPid: state.xvncPid,
     openboxPid: state.openboxPid,
     detached: state.detached
   });
-}
-
-async function terminatePid(pid: number, timeoutMs = 5000): Promise<void> {
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code === "ESRCH") {
-      return;
-    }
-    throw err;
-  }
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code === "ESRCH") {
-        return;
-      }
-      throw err;
-    }
-  }
-
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    if (err.code !== "ESRCH") {
-      throw err;
-    }
-  }
 }
 
 async function openCommand(
@@ -315,36 +466,28 @@ function readOptionalBoolean(obj: Record<string, unknown>, field: string): boole
   return value;
 }
 
-function parseRecordingState(value: unknown): RecordingState | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  const recording = assertObject(value, "recording");
-  return {
-    pid: readRequiredNumber(recording, "pid"),
-    file: readRequiredString(recording, "file"),
-    startedAt: readRequiredString(recording, "startedAt")
-  };
-}
-
 function parseStoredState(value: unknown, stateFilePath: string): StoredDesktopState {
   const root = assertObject(value, "state");
+  const vncPort = readOptionalNumber(root, "vncPort") ?? readOptionalNumber(root, "port");
+  if (vncPort == null) {
+    throw new Error("state field vncPort must be a finite number");
+  }
 
   return {
     runtimeDir: readRequiredString(root, "runtimeDir"),
     display: readRequiredNumber(root, "display"),
-    port: readRequiredNumber(root, "port"),
+    vncPort,
     geometry: readRequiredString(root, "geometry"),
     depth: readRequiredNumber(root, "depth"),
+    dpi: readOptionalNumber(root, "dpi") ?? 96,
+    desktopSizeMode: parseDesktopSizeMode(readRequiredString(root, "desktopSizeMode")),
     sessionDir: readRequiredString(root, "sessionDir"),
     cleanupSessionDirOnStop: readOptionalBoolean(root, "cleanupSessionDirOnStop") ?? false,
     xvncPid: readOptionalNumber(root, "xvncPid"),
     openboxPid: readOptionalNumber(root, "openboxPid"),
     detached: readRequiredBoolean(root, "detached"),
     stateFile: readOptionalString(root, "stateFile") || stateFilePath,
-    startedAt: readOptionalString(root, "startedAt") || nowIso(),
-    recording: parseRecordingState(root.recording)
+    startedAt: readOptionalString(root, "startedAt") || nowIso()
   };
 }
 
@@ -359,52 +502,76 @@ async function saveState(stateFilePath: string, state: StoredDesktopState): Prom
   await fs.writeFile(stateFilePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-async function cmdUp(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const stateFilePath = stateFileFrom(args);
-  const backgroundColor = getOption(args, "background");
+async function cmdUp(options: UpCommandOptions): Promise<void> {
+  const stateFilePath = resolveStateFilePath(options.stateFile);
+  if (options.background && options.backgroundImage) {
+    throw new Error("--background and --background-image are mutually exclusive");
+  }
+  if (options.backgroundMode && !options.backgroundImage) {
+    throw new Error("--background-mode requires --background-image");
+  }
 
-  const desktop = await start({
-    detached: !hasFlag(args, "foreground"),
-    runtimeDir: getOption(args, "runtime-dir"),
-    sessionDir: getOption(args, "session-dir"),
-    display: getOption(args, "display"),
-    port: getOption(args, "port"),
-    geometry: getOption(args, "geometry"),
-    depth: getOption(args, "depth"),
-    openbox: !hasFlag(args, "no-openbox"),
-    background: backgroundColor ? { color: backgroundColor } : undefined
+  const background =
+    options.backgroundImage != null
+      ? {
+          image: options.backgroundImage,
+          mode: options.backgroundMode
+        }
+      : options.background != null
+        ? {
+            color: options.background
+          }
+        : undefined;
+
+  const desktop = await createDesktop({
+    detached: options.foreground !== true,
+    runtimeDir: options.runtimeDir,
+    tempDir: options.sessionDir,
+    vnc: {
+      displayNumber: options.display,
+      vncPort: options.port,
+      xvncArgs: options.xvncArg,
+      geometry: options.geometry,
+      depth: options.depth,
+      dpi: options.dpi,
+      desktopSizeMode: options.desktopSizeMode
+    },
+    openbox: options.openbox,
+    background
   });
 
   const state: StoredDesktopState = {
     runtimeDir: desktop.runtimeDir,
     display: desktop.display,
-    port: desktop.port,
+    vncPort: desktop.vncPort,
     geometry: desktop.geometry,
     depth: desktop.depth,
+    dpi: desktop.dpi,
+    desktopSizeMode: desktop.desktopSizeMode,
     sessionDir: desktop.sessionDir,
     cleanupSessionDirOnStop: desktop.cleanupSessionDirOnStop,
     xvncPid: desktop.xvncPid,
     openboxPid: desktop.openboxPid,
     detached: desktop.detached,
     stateFile: stateFilePath,
-    startedAt: nowIso(),
-    recording: null
+    startedAt: nowIso()
   };
 
   await saveState(stateFilePath, state);
 
-  if (hasFlag(args, "json")) {
+  if (options.json) {
     process.stdout.write(`${JSON.stringify(state)}\n`);
   } else {
     process.stdout.write(`state: ${stateFilePath}\n`);
     process.stdout.write(`display: :${state.display}\n`);
-    process.stdout.write(`vnc: 127.0.0.1:${state.port}\n`);
+    process.stdout.write(`vnc: 127.0.0.1:${state.vncPort}\n`);
+    process.stdout.write(`dpi: ${state.dpi}\n`);
+    process.stdout.write(`desktopSizeMode: ${state.desktopSizeMode}\n`);
     process.stdout.write(`runtime: ${state.runtimeDir}\n`);
     process.stdout.write(`session: ${state.sessionDir}\n`);
   }
 
-  if (!hasFlag(args, "foreground")) {
+  if (options.foreground !== true) {
     return;
   }
 
@@ -432,14 +599,9 @@ async function cmdUp(rawArgs: readonly string[]): Promise<void> {
   });
 }
 
-async function cmdDown(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const stateFilePath = stateFileFrom(args);
+async function cmdDown(options: StateFileOption): Promise<void> {
+  const stateFilePath = resolveStateFilePath(options.stateFile);
   const state = await loadState(stateFilePath);
-
-  if (state.recording?.pid) {
-    await terminatePid(state.recording.pid).catch(() => {});
-  }
 
   const desktop = desktopFromState(state);
   await desktop.kill();
@@ -448,39 +610,28 @@ async function cmdDown(rawArgs: readonly string[]): Promise<void> {
   process.stdout.write("stopped\n");
 }
 
-async function cmdInfo(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const state = await loadState(stateFileFrom(args));
+async function cmdInfo(options: InfoCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
 
-  if (hasFlag(args, "json")) {
+  if (options.json) {
     process.stdout.write(`${JSON.stringify(state)}\n`);
     return;
   }
 
   process.stdout.write(`state: ${state.stateFile}\n`);
   process.stdout.write(`display: :${state.display}\n`);
-  process.stdout.write(`vnc: 127.0.0.1:${state.port}\n`);
+  process.stdout.write(`vnc: 127.0.0.1:${state.vncPort}\n`);
+  process.stdout.write(`dpi: ${state.dpi}\n`);
+  process.stdout.write(`desktopSizeMode: ${state.desktopSizeMode}\n`);
   process.stdout.write(`runtime: ${state.runtimeDir}\n`);
   process.stdout.write(`session: ${state.sessionDir}\n`);
   process.stdout.write(`started: ${state.startedAt}\n`);
-  process.stdout.write(`recording: ${state.recording ? state.recording.file : "none"}\n`);
 }
 
-async function cmdOpen(rawArgs: readonly string[]): Promise<void> {
-  const separatorIndex = rawArgs.indexOf("--");
-  const before = separatorIndex === -1 ? rawArgs : rawArgs.slice(0, separatorIndex);
-  const after = separatorIndex === -1 ? [] : rawArgs.slice(separatorIndex + 1);
-
-  const args = parseKeyValueArgs(before);
-  const state = await loadState(stateFileFrom(args));
+async function cmdOpen(command: string, commandArgs: string[], options: OpenCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
   const desktop = desktopFromState(state);
 
-  const commandParts = after.length > 0 ? after : args.positional;
-  if (commandParts.length === 0) {
-    throw new Error("open requires a command. Example: portabledesktop open -- google-chrome-stable https://example.com");
-  }
-
-  const [command, ...commandArgs] = commandParts;
   if (isChromeLike(command) && !commandArgs.some((arg) => arg.startsWith("--user-data-dir"))) {
     const profileDir = path.join(state.sessionDir, "profiles", `chrome-${Date.now()}`);
     await fs.mkdir(profileDir, { recursive: true });
@@ -488,37 +639,26 @@ async function cmdOpen(rawArgs: readonly string[]): Promise<void> {
   }
 
   const launched = await openCommand(desktop, command, commandArgs, {
-    cwd: getOption(args, "cwd")
+    cwd: options.cwd
   });
 
   process.stdout.write(`${JSON.stringify(launched)}\n`);
 }
 
-async function cmdRun(rawArgs: readonly string[]): Promise<void> {
-  const separatorIndex = rawArgs.indexOf("--");
-  const before = separatorIndex === -1 ? rawArgs : rawArgs.slice(0, separatorIndex);
-  const after = separatorIndex === -1 ? [] : rawArgs.slice(separatorIndex + 1);
-
-  const args = parseKeyValueArgs(before);
-  const state = await loadState(stateFileFrom(args));
+async function cmdRun(command: string, commandArgs: string[], options: RunCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
   const desktop = desktopFromState(state);
 
-  const commandParts = after.length > 0 ? after : args.positional;
-  if (commandParts.length === 0) {
-    throw new Error("run requires a command. Example: portabledesktop run -- xdotool getmouselocation");
-  }
-
-  const [command, ...commandArgs] = commandParts;
   const result = await runCommand(desktop, command, commandArgs, {
-    cwd: getOption(args, "cwd"),
-    timeoutMs: parseIntegerOption(args, "timeout-ms")
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs
   });
 
-  if (result.code !== 0 && !hasFlag(args, "allow-non-zero")) {
+  if (result.code !== 0 && !options.allowNonZero) {
     throw new Error(`${command} exited with code ${result.code}: ${result.stderr || result.stdout}`.trim());
   }
 
-  if (hasFlag(args, "json")) {
+  if (options.json) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     if (result.stdout) {
@@ -537,186 +677,571 @@ async function cmdRun(rawArgs: readonly string[]): Promise<void> {
   }
 }
 
-async function cmdBackground(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const color = args.positional[0] || getOption(args, "color");
-  if (!color) {
-    throw new Error("background requires a color. Example: portabledesktop background '#202428'");
-  }
-
-  const state = await loadState(stateFileFrom(args));
+async function cmdBackground(color: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
   const desktop = desktopFromState(state);
-  await desktop.setBackground(color);
+  await desktop.setBackground({ color });
   process.stdout.write("background updated\n");
 }
 
-async function cmdMouse(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const [subcommand, ...rest] = args.positional;
-  if (!subcommand) {
-    throw new Error("mouse command required: move|click|down|up|scroll");
-  }
-
-  const state = await loadState(stateFileFrom(args));
+async function cmdBackgroundImage(
+  imagePath: string,
+  options: BackgroundImageCommandOptions
+): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
   const desktop = desktopFromState(state);
+  await desktop.setBackground({ image: imagePath, mode: options.mode });
+  process.stdout.write("background updated\n");
+}
 
-  switch (subcommand) {
-    case "move":
-      await desktop.moveMouse(parseInteger(rest[0] ?? "", "move x"), parseInteger(rest[1] ?? "", "move y"));
-      break;
-    case "click":
-      await desktop.click(rest[0] || "left");
-      break;
-    case "down":
-      await desktop.mouseDown(rest[0] || "left");
-      break;
-    case "up":
-      await desktop.mouseUp(rest[0] || "left");
-      break;
-    case "scroll":
-      await desktop.scroll(
-        rest[0] === undefined ? 0 : parseInteger(rest[0], "scroll dx"),
-        rest[1] === undefined ? 0 : parseInteger(rest[1], "scroll dy")
-      );
-      break;
-    default:
-      throw new Error(`unknown mouse subcommand: ${subcommand}`);
-  }
-
+async function cmdMouseMove(x: number, y: number, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.moveMouse(x, y);
   process.stdout.write("ok\n");
 }
 
-async function cmdKeyboard(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const [subcommand, ...rest] = args.positional;
-  if (!subcommand) {
-    throw new Error("keyboard command required: type|key");
-  }
-
-  const state = await loadState(stateFileFrom(args));
+async function cmdMouseClick(button: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
   const desktop = desktopFromState(state);
-
-  switch (subcommand) {
-    case "type":
-      await desktop.type(rest.join(" "));
-      break;
-    case "key":
-      await desktop.key(rest.join(" "));
-      break;
-    default:
-      throw new Error(`unknown keyboard subcommand: ${subcommand}`);
-  }
-
+  await desktop.click(button);
   process.stdout.write("ok\n");
 }
 
-async function cmdRecord(rawArgs: readonly string[]): Promise<void> {
-  const args = parseKeyValueArgs(rawArgs);
-  const [subcommand, ...rest] = args.positional;
-  if (!subcommand) {
-    throw new Error("record command required: start|stop");
-  }
-
-  const stateFilePath = stateFileFrom(args);
-  const state = await loadState(stateFilePath);
+async function cmdMouseDown(button: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
   const desktop = desktopFromState(state);
+  await desktop.mouseDown(button);
+  process.stdout.write("ok\n");
+}
 
-  if (subcommand === "start") {
-    if (state.recording?.pid) {
-      throw new Error("recording already in progress");
-    }
+async function cmdMouseUp(button: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.mouseUp(button);
+  process.stdout.write("ok\n");
+}
 
-    const outFile = rest[0] || path.join(state.sessionDir, `recording-${Date.now()}.mp4`);
-    const recording = await desktop.record({
-      file: outFile,
-      fps: parseIntegerOption(args, "fps") ?? 30,
-      detached: true
-    });
+async function cmdMouseScroll(dx: number, dy: number, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.scroll(dx, dy);
+  process.stdout.write("ok\n");
+}
 
-    state.recording = {
-      pid: recording.pid,
-      file: recording.file,
-      startedAt: nowIso()
-    };
-    await saveState(stateFilePath, state);
-    process.stdout.write(`${JSON.stringify(state.recording)}\n`);
+async function cmdKeyboardType(text: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.type(text);
+  process.stdout.write("ok\n");
+}
+
+async function cmdKeyboardKey(combo: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.key(combo);
+  process.stdout.write("ok\n");
+}
+
+async function cmdKeyboardDown(key: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.keyDown(key);
+  process.stdout.write("ok\n");
+}
+
+async function cmdKeyboardUp(key: string, options: StateFileOption): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  await desktop.keyUp(key);
+  process.stdout.write("ok\n");
+}
+
+async function cmdCursor(options: CursorCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+  const cursor = await desktop.mousePosition();
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(cursor)}\n`);
     return;
   }
 
-  if (subcommand === "stop") {
-    if (!state.recording?.pid) {
-      process.stdout.write("no recording active\n");
+  process.stdout.write(`${cursor.x},${cursor.y}\n`);
+}
+
+async function cmdScreenshot(fileArg: string | undefined, options: ScreenshotCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+
+  const screenshot = await desktop.screenshot({
+    region: parseScreenshotRegion(options),
+    scaleToGeometry: options.scaleToGeometry === true,
+    timeoutMs: options.timeoutMs
+  });
+
+  const outFile = options.file || fileArg;
+  const resolvedOutFile = outFile ? path.resolve(outFile) : null;
+  if (resolvedOutFile) {
+    await fs.mkdir(path.dirname(resolvedOutFile), { recursive: true });
+    await fs.writeFile(resolvedOutFile, Buffer.from(screenshot.data, "base64"));
+  }
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({
+        ...screenshot,
+        file: resolvedOutFile
+      })}\n`
+    );
+    return;
+  }
+
+  if (resolvedOutFile) {
+    process.stdout.write(`${resolvedOutFile}\n`);
+    return;
+  }
+
+  process.stdout.write(`${screenshot.data}\n`);
+}
+
+async function cmdRecord(fileArg: string | undefined, options: RecordCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const desktop = desktopFromState(state);
+
+  const outFile = fileArg || path.join(state.sessionDir, `recording-${Date.now()}.mp4`);
+  const recording = await desktop.record({
+    file: outFile,
+    fps: options.fps ?? 30
+  });
+
+  process.stdout.write(`recording: ${recording.file}\n`);
+  process.stdout.write("press Ctrl+C to stop\n");
+
+  await new Promise<void>((resolve, reject) => {
+    let stopping = false;
+    const stop = (): void => {
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+      void (async () => {
+        try {
+          await recording.stop();
+          process.stdout.write(`saved: ${recording.file}\n`);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      })();
+    };
+
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+  });
+}
+
+async function cmdViewer(options: ViewerCommandOptions): Promise<void> {
+  const state = await loadState(resolveStateFilePath(options.stateFile));
+  const targetVncHost = "127.0.0.1";
+  const targetVncPort = state.vncPort;
+
+  const host = options.host || "127.0.0.1";
+  const listenPort = options.port;
+  if (listenPort !== undefined && (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535)) {
+    throw new Error(`invalid viewer port: ${String(listenPort)}`);
+  }
+  const viewerClientScript = await loadViewerClientScript();
+  const viewerScale = options.scale || "fit";
+  const desktopSizeMode = parseDesktopSizeMode(state.desktopSizeMode);
+  const viewerConfig = { scale: viewerScale, desktopSizeMode };
+
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const url = new URL(req.url || "/", `http://${host}`);
+      const pathname = url.pathname;
+
+      if (pathname === "/" || pathname === "/index.html") {
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store"
+        });
+        res.end(viewerHtml(viewerConfig));
+        return;
+      }
+
+      if (pathname === "/viewer.js") {
+        res.writeHead(200, {
+          "content-type": "text/javascript; charset=utf-8",
+          "cache-control": "no-store"
+        });
+        res.end(viewerClientScript);
+        return;
+      }
+
+      if (pathname === "/healthz") {
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        res.end("ok");
+        return;
+      }
+
+      notFound(res);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === "ENOENT") {
+        notFound(res);
+        return;
+      }
+      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      res.end(err.message || String(error));
+    }
+  });
+
+  const sockets = new Set<net.Socket>();
+  const wsToTcp = new Map<WebSocket, net.Socket>();
+
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => {
+      sockets.delete(socket);
+    });
+  });
+
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on("upgrade", (req, socket, head) => {
+    const url = new URL(req.url || "/", `http://${host}`);
+    if (url.pathname !== "/ws") {
+      socket.destroy();
       return;
     }
 
-    await terminatePid(state.recording.pid).catch(() => {});
-    state.recording = null;
-    await saveState(stateFilePath, state);
-    process.stdout.write("recording stopped\n");
-    return;
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  });
+
+  wss.on("connection", (ws) => {
+    const tcp = net.connect({ host: targetVncHost, port: targetVncPort });
+    wsToTcp.set(ws, tcp);
+
+    tcp.on("data", (chunk: Buffer) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(chunk);
+      }
+    });
+
+    tcp.on("error", () => {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    });
+
+    tcp.on("close", () => {
+      wsToTcp.delete(ws);
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close();
+      }
+    });
+
+    ws.on("message", (data: RawData, isBinary: boolean) => {
+      if (tcp.destroyed) {
+        return;
+      }
+      if (typeof data === "string") {
+        tcp.write(data, "utf8");
+        return;
+      }
+      if (data instanceof ArrayBuffer) {
+        tcp.write(Buffer.from(data));
+        return;
+      }
+      if (Array.isArray(data)) {
+        for (const chunk of data) {
+          tcp.write(Buffer.from(chunk));
+        }
+        return;
+      }
+      if (isBinary) {
+        tcp.write(data);
+      } else {
+        tcp.write(data.toString());
+      }
+    });
+
+    ws.on("close", () => {
+      wsToTcp.delete(ws);
+      tcp.destroy();
+    });
+
+    ws.on("error", () => {
+      wsToTcp.delete(ws);
+      tcp.destroy();
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(listenPort ?? 0, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to determine viewer server address");
   }
 
-  throw new Error(`unknown record subcommand: ${subcommand}`);
+  const url = `http://${host}:${address.port}`;
+  process.stdout.write(`viewer: ${url}\n`);
+  process.stdout.write(`vnc: ${targetVncHost}:${targetVncPort}\n`);
+
+  if (options.open !== false) {
+    openHostBrowser(url);
+  }
+
+  await new Promise<void>((resolve) => {
+    let stopping = false;
+    const stop = (): void => {
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+
+      for (const ws of wss.clients) {
+        ws.close();
+      }
+      for (const socket of wsToTcp.values()) {
+        socket.destroy();
+      }
+      wsToTcp.clear();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      sockets.clear();
+
+      wss.close(() => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    };
+
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+  });
 }
 
-function printHelp(): void {
-  process.stdout.write("portabledesktop\n\n");
-  process.stdout.write("Usage:\n");
-  process.stdout.write("  portabledesktop up [--port 5901] [--geometry 1280x800] [--background '#202428'] [--json]\n");
-  process.stdout.write("  portabledesktop down\n");
-  process.stdout.write("  portabledesktop info [--json]\n");
-  process.stdout.write("  portabledesktop open -- <command> [args...]\n");
-  process.stdout.write("  portabledesktop run [--json] [--allow-non-zero] -- <command> [args...]\n");
-  process.stdout.write("  portabledesktop background <color>\n");
-  process.stdout.write("  portabledesktop mouse move <x> <y>\n");
-  process.stdout.write("  portabledesktop mouse click [left|middle|right]\n");
-  process.stdout.write("  portabledesktop keyboard type <text>\n");
-  process.stdout.write("  portabledesktop keyboard key <combo>\n");
-  process.stdout.write("  portabledesktop record start [file.mp4]\n");
-  process.stdout.write("  portabledesktop record stop\n");
-  process.stdout.write("\nGlobal state file override:\n");
-  process.stdout.write("  --state-file <path>\n");
+function withStateFileOption(command: Command): Command {
+  command.option("--state-file <path>", "path to desktop state file", defaultStateFile);
+  return command;
+}
+
+function createProgram(): Command {
+  const program = new Command();
+  program.name("portabledesktop");
+  program.description("Portable Linux desktop runtime CLI");
+  program.enablePositionalOptions();
+  program.showHelpAfterError();
+
+  withStateFileOption(program.command("up").description("start a desktop session"))
+    .option("--json", "print session info as JSON")
+    .option("--foreground", "run in foreground until interrupted")
+    .option("--no-openbox", "disable Openbox (lightweight window manager)")
+    .option(
+      "--xvnc-arg <arg>",
+      "extra Xvnc argument (repeatable; use --xvnc-arg=<value> for values that start with '-')",
+      (value: string, previous: string[] | undefined) => [...(previous ?? []), value]
+    )
+    .option("--runtime-dir <path>", "runtime directory")
+    .option("--session-dir <path>", "session directory")
+    .option("--display <n>", "display number")
+    .option("--port <n>", "VNC port")
+    .option("--geometry <WxH>", "desktop geometry")
+    .option("--depth <n>", "color depth")
+    .option("--dpi <n>", "desktop DPI", parseIntegerOptionValue("dpi"))
+    .option("--desktop-size-mode <mode>", "desktop size mode (fixed|dynamic)", parseDesktopSizeModeOption)
+    .option("--background <color>", "background color")
+    .option("--background-image <file>", "background image file")
+    .option(
+      "--background-mode <mode>",
+      "background image mode (center|fill|fit|stretch|tile)",
+      parseBackgroundImageModeOption
+    )
+    .action(async (options: UpCommandOptions) => {
+      await cmdUp(options);
+    });
+
+  withStateFileOption(program.command("down").description("stop a desktop session")).action(
+    async (options: StateFileOption) => {
+      await cmdDown(options);
+    }
+  );
+
+  withStateFileOption(program.command("info").description("show session info"))
+    .option("--json", "print state JSON")
+    .action(async (options: InfoCommandOptions) => {
+      await cmdInfo(options);
+    });
+
+  withStateFileOption(
+    program
+      .command("open")
+      .description("launch a detached program in the desktop environment")
+      .allowUnknownOption(true)
+      .passThroughOptions()
+      .option("--cwd <path>", "working directory")
+      .argument("<command>", "program to launch")
+      .argument("[args...]", "program arguments")
+  ).action(async (command: string, args: string[] | undefined, options: OpenCommandOptions) => {
+    await cmdOpen(command, args ?? [], options);
+  });
+
+  withStateFileOption(
+    program
+      .command("run")
+      .description("run a command in the desktop environment and capture output")
+      .allowUnknownOption(true)
+      .passThroughOptions()
+      .option("--cwd <path>", "working directory")
+      .option("--timeout-ms <n>", "command timeout in milliseconds", parseIntegerOptionValue("timeout-ms"))
+      .option("--json", "print structured JSON output")
+      .option("--allow-non-zero", "allow non-zero exit code")
+      .argument("<command>", "program to run")
+      .argument("[args...]", "program arguments")
+  ).action(async (command: string, args: string[] | undefined, options: RunCommandOptions) => {
+    await cmdRun(command, args ?? [], options);
+  });
+
+  withStateFileOption(
+    program.command("background").description("set solid background color").argument("<color>", "hex/rgb")
+  )
+    .action(async (color: string, options: StateFileOption) => {
+      await cmdBackground(color, options);
+    });
+
+  withStateFileOption(
+    program
+      .command("background-image")
+      .description("set background image")
+      .argument("<file>", "path to image file")
+      .option(
+        "--mode <mode>",
+        "background image mode (center|fill|fit|stretch|tile)",
+        parseBackgroundImageModeOption
+      )
+  ).action(async (filePath: string, options: BackgroundImageCommandOptions) => {
+    await cmdBackgroundImage(filePath, options);
+  });
+
+  withStateFileOption(program.command("cursor").description("print cursor position"))
+    .option("--json", "print cursor position as JSON")
+    .action(async (options: CursorCommandOptions) => {
+      await cmdCursor(options);
+    });
+
+  withStateFileOption(
+    program
+      .command("screenshot")
+      .description("capture screenshot as file path or base64")
+      .argument("[file]", "output PNG path")
+      .option("--file <path>", "output PNG path")
+      .option("--json", "print result as JSON")
+      .option("--x <n>", "capture region x", parseIntegerOptionValue("x"))
+      .option("--y <n>", "capture region y", parseIntegerOptionValue("y"))
+      .option("--width <n>", "capture region width", parseIntegerOptionValue("width"))
+      .option("--height <n>", "capture region height", parseIntegerOptionValue("height"))
+      .option("--scale-to-geometry", "scale cropped region to full desktop geometry")
+      .option("--timeout-ms <n>", "capture timeout", parseIntegerOptionValue("timeout-ms"))
+  ).action(async (fileArg: string | undefined, options: ScreenshotCommandOptions) => {
+    await cmdScreenshot(fileArg, options);
+  });
+
+  withStateFileOption(
+    program
+      .command("viewer")
+      .description("serve a live browser viewer for the current desktop session")
+      .option("--host <host>", "viewer listen host", "127.0.0.1")
+      .option("--port <n>", "viewer listen port (0 = random)", parseIntegerOptionValue("port"))
+      .option("--scale <mode>", "viewer scale mode (fit|1:1)", parseViewerScaleOption)
+      .option("--no-open", "do not auto-open browser")
+  ).action(async (options: ViewerCommandOptions) => {
+    await cmdViewer(options);
+  });
+
+  const mouse = program.command("mouse").description("mouse actions");
+  withStateFileOption(mouse.command("move").argument("<x>", "x coordinate").argument("<y>", "y coordinate")).action(
+    async (x: string, y: string, options: StateFileOption) => {
+      await cmdMouseMove(parseInteger(x, "move x"), parseInteger(y, "move y"), options);
+    }
+  );
+  withStateFileOption(
+    mouse.command("click").argument("[button]", "left|middle|right", "left")
+  ).action(async (button: string, options: StateFileOption) => {
+    await cmdMouseClick(button, options);
+  });
+  withStateFileOption(
+    mouse.command("down").argument("[button]", "left|middle|right", "left")
+  ).action(async (button: string, options: StateFileOption) => {
+    await cmdMouseDown(button, options);
+  });
+  withStateFileOption(mouse.command("up").argument("[button]", "left|middle|right", "left")).action(
+    async (button: string, options: StateFileOption) => {
+      await cmdMouseUp(button, options);
+    }
+  );
+  withStateFileOption(mouse.command("scroll").argument("[dx]", "horizontal amount", "0").argument("[dy]", "vertical amount", "0"))
+    .action(async (dx: string, dy: string, options: StateFileOption) => {
+      await cmdMouseScroll(parseInteger(dx, "scroll dx"), parseInteger(dy, "scroll dy"), options);
+    });
+
+  const keyboard = program.command("keyboard").description("keyboard actions");
+  withStateFileOption(keyboard.command("type").argument("<text...>", "text to type")).action(
+    async (textParts: string[], options: StateFileOption) => {
+      await cmdKeyboardType(textParts.join(" "), options);
+    }
+  );
+  withStateFileOption(keyboard.command("key").argument("<combo...>", "key combo")).action(
+    async (comboParts: string[], options: StateFileOption) => {
+      await cmdKeyboardKey(comboParts.join(" "), options);
+    }
+  );
+  withStateFileOption(keyboard.command("down").argument("<key...>", "key")).action(
+    async (keyParts: string[], options: StateFileOption) => {
+      await cmdKeyboardDown(keyParts.join(" "), options);
+    }
+  );
+  withStateFileOption(keyboard.command("up").argument("<key...>", "key")).action(
+    async (keyParts: string[], options: StateFileOption) => {
+      await cmdKeyboardUp(keyParts.join(" "), options);
+    }
+  );
+
+  withStateFileOption(
+    program.command("record").description("record desktop session until interrupted").argument("[file]", "recording output file")
+  )
+    .option("--fps <n>", "recording frames per second", parseIntegerOptionValue("fps"))
+    .action(async (fileArg: string | undefined, options: RecordCommandOptions) => {
+      await cmdRecord(fileArg, options);
+    });
+
+  return program;
 }
 
 async function main(): Promise<void> {
-  const [, , command, ...args] = process.argv;
+  const program = createProgram();
 
-  if (!command || command === "-h" || command === "--help" || command === "help") {
-    printHelp();
+  if (process.argv.length <= 2) {
+    program.outputHelp();
     return;
   }
 
-  switch (command) {
-    case "up":
-      await cmdUp(args);
-      return;
-    case "down":
-      await cmdDown(args);
-      return;
-    case "info":
-      await cmdInfo(args);
-      return;
-    case "open":
-      await cmdOpen(args);
-      return;
-    case "run":
-      await cmdRun(args);
-      return;
-    case "background":
-      await cmdBackground(args);
-      return;
-    case "mouse":
-      await cmdMouse(args);
-      return;
-    case "keyboard":
-      await cmdKeyboard(args);
-      return;
-    case "record":
-      await cmdRecord(args);
-      return;
-    default:
-      throw new Error(`unknown command: ${command}`);
-  }
+  await program.parseAsync(process.argv);
 }
 
 main().catch((error: unknown) => {

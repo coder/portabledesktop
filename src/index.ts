@@ -1,13 +1,15 @@
-export { Desktop, start } from "./session";
+export { Desktop, createDesktop } from "./session";
 export type {
-  AttachedRecordingResult,
+  BackgroundImageMode,
+  BackgroundOptions,
+  DesktopSizeMode,
   CursorPosition,
-  DetachedRecordingResult,
   KillOptions,
   RecordingHandle,
   RecordingResult,
   ScreenshotImage,
   ScreenshotOptions,
   StartOptions,
-  StartRecordingOptions
+  VncOptions,
+  RecordingOptions
 } from "./session";

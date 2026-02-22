@@ -6,10 +6,12 @@
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "start": "bun run src/index.ts",
-    "smoke": "bun run src/index.ts --prompt \"Open coder.com and confirm the homepage title.\""
+    "smoke": "bun run src/index.ts --prompt \"Open coder.com and confirm the homepage title.\"",
+    "smoke:openai": "bun run src/index.ts --provider openai --model gpt-5 --prompt \"Open coder.com and confirm the homepage title.\""
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
+    "@ai-sdk/openai": "^3.0.30",
     "@novnc/novnc": "1.5.0",
     "ai": "^6.0.97"
   },

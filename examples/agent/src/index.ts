@@ -6,30 +6,26 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
 import { ToolLoopAgent as Agent, stepCountIs } from "ai";
 
-import { start, type Desktop } from "../../../src/index.ts";
+import { createDesktop, type Desktop } from "../../../src/index.ts";
+import { anthropic as pdAnthropic, openai as pdOpenAI } from "../../../src/ai/index.ts";
+
+type ProviderName = "anthropic" | "openai";
+
+const DEFAULT_PROMPT =
+  "Open a browser and navigate to coder.com. Find the Dropbox customer story and confirm when you are on that page.";
+const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-6";
+const DEFAULT_OPENAI_MODEL = "computer-use-preview";
+const DEFAULT_MAX_STEPS = 100;
 
 interface CliOptions {
   prompt: string;
+  provider: ProviderName;
+  model?: string;
+  maxSteps: number;
 }
-
-interface ImageOutput {
-  kind: "image";
-  data: string;
-  mediaType: "image/png";
-}
-
-interface TextOutput {
-  kind: "text";
-  text: string;
-}
-
-type ComputerToolOutput = ImageOutput | TextOutput;
-
-type ComputerToolArgs = Parameters<typeof anthropic.tools.computer_20251124>[0];
-type ComputerToolExecute = NonNullable<ComputerToolArgs["execute"]>;
-type ComputerActionInput = Parameters<ComputerToolExecute>[0];
 
 interface OpenInDesktopResult {
   pid: number;
@@ -59,20 +55,26 @@ function delay(ms: number): Promise<void> {
 
 function usage(): string {
   return [
-    "Usage: bun run src/index.ts [--prompt <text>]",
+    "Usage: bun run src/index.ts [--prompt <text>] [--provider anthropic|openai] [--model <id>] [--max-steps <n>]",
+    "",
+    "Options:",
+    "  --provider   Agent provider (default: anthropic)",
+    "  --model      Override model id",
+    "  --max-steps  Maximum agent steps (default: 100)",
     "",
     "Behavior:",
     "  1) Starts a portable desktop session",
     "  2) Opens a live browser viewer on your host",
-    "  3) Runs the agent for your prompt",
+    "  3) Runs the agent for your prompt and streams text output",
     "  4) Opens the recorded MP4 in your host browser"
   ].join("\n");
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = {
-    prompt:
-      "Open a browser and navigate to coder.com. Find the Dropbox customer story and confirm when you are on that page."
+    prompt: DEFAULT_PROMPT,
+    provider: "anthropic",
+    maxSteps: DEFAULT_MAX_STEPS
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -87,6 +89,39 @@ function parseArgs(argv: readonly string[]): CliOptions {
         i += 1;
         break;
       }
+      case "--provider": {
+        const value = argv[i + 1];
+        if (value !== "anthropic" && value !== "openai") {
+          throw new Error("--provider must be either 'anthropic' or 'openai'");
+        }
+        options.provider = value;
+        i += 1;
+        break;
+      }
+      case "--model": {
+        const value = argv[i + 1];
+        if (!value) {
+          throw new Error("--model requires a value");
+        }
+        options.model = value;
+        i += 1;
+        break;
+      }
+      case "--max-steps": {
+        const value = argv[i + 1];
+        if (!value) {
+          throw new Error("--max-steps requires a value");
+        }
+
+        const parsed = Number.parseInt(value, 10);
+        if (!Number.isFinite(parsed) || parsed < 1) {
+          throw new Error("--max-steps must be a positive integer");
+        }
+
+        options.maxSteps = parsed;
+        i += 1;
+        break;
+      }
       case "--help": {
         process.stdout.write(`${usage()}\n`);
         process.exit(0);
@@ -98,6 +133,16 @@ function parseArgs(argv: readonly string[]): CliOptions {
   }
 
   return options;
+}
+
+function requireProviderApiKey(provider: ProviderName): void {
+  if (provider === "anthropic" && !process.env.ANTHROPIC_API_KEY) {
+    throw new Error("ANTHROPIC_API_KEY is missing. Set it in environment or .env.local at repo root.");
+  }
+
+  if (provider === "openai" && !process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is missing. Set it in environment or .env.local at repo root.");
+  }
 }
 
 async function loadEnvFileIfPresent(filePath: string): Promise<void> {
@@ -449,206 +494,19 @@ async function startViewerServer(vncPort: number): Promise<ViewerServerHandle> {
   };
 }
 
-class DesktopComputer {
-  constructor(private readonly desktop: Desktop, private readonly width: number, private readonly height: number) {}
-
-  private clampPoint(point: readonly [number, number]): [number, number] {
-    const x = Math.max(0, Math.min(this.width - 1, Math.round(point[0])));
-    const y = Math.max(0, Math.min(this.height - 1, Math.round(point[1])));
-    return [x, y];
-  }
-
-  private requirePoint(point: [number, number] | undefined, label: string): [number, number] {
-    if (!point) {
-      throw new Error(`${label} is required for this action`);
-    }
-    return this.clampPoint(point);
-  }
-
-  private async currentCursor(): Promise<[number, number]> {
-    const position = await this.desktop.mousePosition();
-    return this.clampPoint([position.x, position.y]);
-  }
-
-  private async capturePng(region?: [number, number, number, number]): Promise<string> {
-    const screenshot = await this.desktop.screenshot({
-      region,
-      scaleToGeometry: region != null,
-      timeoutMs: 20000
-    });
-    return screenshot.data;
-  }
-
-  private async repeatClick(button: "left" | "middle" | "right", count: number): Promise<void> {
-    for (let i = 0; i < Math.max(1, count); i += 1) {
-      // eslint-disable-next-line no-await-in-loop
-      await this.desktop.click(button);
-    }
-  }
-
-  async execute(input: ComputerActionInput): Promise<ComputerToolOutput> {
-    switch (input.action) {
-      case "key": {
-        if (!input.text) {
-          throw new Error("text is required for key action");
-        }
-        await this.desktop.key(input.text);
-        return { kind: "text", text: `pressed key combo: ${input.text}` };
-      }
-      case "hold_key": {
-        if (!input.text) {
-          throw new Error("text is required for hold_key action");
-        }
-
-        const keys = input.text
-          .split("+")
-          .map((key) => key.trim())
-          .filter((key) => key.length > 0);
-
-        if (keys.length === 0) {
-          throw new Error("hold_key requires at least one key");
-        }
-
-        for (const key of keys) {
-          await this.desktop.keyDown(key);
-        }
-
-        const durationMs = Math.max(10, Math.round((input.duration ?? 0.25) * 1000));
-        await delay(durationMs);
-
-        for (const key of [...keys].reverse()) {
-          await this.desktop.keyUp(key);
-        }
-
-        return { kind: "text", text: `held keys for ${durationMs}ms: ${keys.join("+")}` };
-      }
-      case "type": {
-        if (!input.text) {
-          throw new Error("text is required for type action");
-        }
-        await this.desktop.type(input.text);
-        return { kind: "text", text: `typed ${input.text.length} characters` };
-      }
-      case "cursor_position": {
-        const [x, y] = await this.currentCursor();
-        return { kind: "text", text: `cursor at ${x},${y}` };
-      }
-      case "mouse_move": {
-        const [x, y] = this.requirePoint(input.coordinate, "coordinate");
-        await this.desktop.moveMouse(x, y);
-        return { kind: "text", text: `moved mouse to ${x},${y}` };
-      }
-      case "left_mouse_down": {
-        await this.desktop.mouseDown("left");
-        return { kind: "text", text: "left mouse down" };
-      }
-      case "left_mouse_up": {
-        await this.desktop.mouseUp("left");
-        return { kind: "text", text: "left mouse up" };
-      }
-      case "left_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
-          await this.desktop.moveMouse(x, y);
-        }
-        await this.desktop.click("left");
-        return { kind: "text", text: "left click" };
-      }
-      case "left_click_drag": {
-        const [startX, startY] = this.requirePoint(input.start_coordinate, "start_coordinate");
-        const [endX, endY] = this.requirePoint(input.coordinate, "coordinate");
-
-        await this.desktop.moveMouse(startX, startY);
-        await this.desktop.mouseDown("left");
-        await this.desktop.moveMouse(endX, endY);
-        await this.desktop.mouseUp("left");
-
-        return { kind: "text", text: `dragged from ${startX},${startY} to ${endX},${endY}` };
-      }
-      case "right_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
-          await this.desktop.moveMouse(x, y);
-        }
-        await this.desktop.click("right");
-        return { kind: "text", text: "right click" };
-      }
-      case "middle_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
-          await this.desktop.moveMouse(x, y);
-        }
-        await this.desktop.click("middle");
-        return { kind: "text", text: "middle click" };
-      }
-      case "double_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
-          await this.desktop.moveMouse(x, y);
-        }
-        await this.repeatClick("left", 2);
-        return { kind: "text", text: "double click" };
-      }
-      case "triple_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
-          await this.desktop.moveMouse(x, y);
-        }
-        await this.repeatClick("left", 3);
-        return { kind: "text", text: "triple click" };
-      }
-      case "scroll": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
-          await this.desktop.moveMouse(x, y);
-        }
-
-        const amount = Math.max(1, Math.round(input.scroll_amount ?? 3));
-        const direction = input.scroll_direction ?? "down";
-        const delta =
-          direction === "up"
-            ? { dx: 0, dy: -amount }
-            : direction === "down"
-              ? { dx: 0, dy: amount }
-              : direction === "left"
-                ? { dx: -amount, dy: 0 }
-                : { dx: amount, dy: 0 };
-
-        await this.desktop.scroll(delta.dx, delta.dy);
-        return { kind: "text", text: `scrolled ${direction} by ${amount}` };
-      }
-      case "wait": {
-        const waitMs = Math.max(10, Math.round((input.duration ?? 1) * 1000));
-        await delay(waitMs);
-        return { kind: "text", text: `waited ${waitMs}ms` };
-      }
-      case "screenshot": {
-        const data = await this.capturePng();
-        return { kind: "image", data, mediaType: "image/png" };
-      }
-      case "zoom": {
-        const data = await this.capturePng(input.region);
-        return { kind: "image", data, mediaType: "image/png" };
-      }
-      default: {
-        const exhaustiveCheck: never = input.action;
-        throw new Error(`unsupported action: ${String(exhaustiveCheck)}`);
-      }
-    }
-  }
-}
-
 async function main(): Promise<void> {
   await loadEnvFileIfPresent(path.join(repoRoot, ".env.local"));
-
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is missing. Set it in environment or .env.local at repo root.");
-  }
-
   const options = parseArgs(process.argv.slice(2));
 
-  const desktop = await start({
-    geometry: "1280x800",
+  requireProviderApiKey(options.provider);
+
+  const modelId =
+    options.model ?? (options.provider === "openai" ? DEFAULT_OPENAI_MODEL : DEFAULT_ANTHROPIC_MODEL);
+
+  const desktop = await createDesktop({
+    vnc: {
+      geometry: "1280x800"
+    },
     background: { color: "#1f252f" },
     openbox: true,
     detached: false
@@ -664,7 +522,7 @@ async function main(): Promise<void> {
     idleNoiseTolerance: "-38dB"
   });
 
-  const viewer = await startViewerServer(desktop.port);
+  const viewer = await startViewerServer(desktop.vncPort);
   openHostBrowser(viewer.url);
 
   const launchedBrowser = await launchDesktopBrowser(desktop);
@@ -673,55 +531,55 @@ async function main(): Promise<void> {
   process.stdout.write(`viewer: ${viewer.url}\n`);
   process.stdout.write(`desktop browser: ${launchedBrowser.browser}\n`);
   process.stdout.write(`recording: ${recordingPath}\n`);
+  process.stdout.write(`provider: ${options.provider}\n`);
+  process.stdout.write(`model: ${modelId}\n`);
 
-  const computer = new DesktopComputer(desktop, 1280, 800);
-
-  const computerTool = anthropic.tools.computer_20251124<ComputerToolOutput>({
-    displayWidthPx: 1280,
-    displayHeightPx: 800,
-    displayNumber: desktop.display,
-    enableZoom: true,
-    execute: async (input) => computer.execute(input),
-    toModelOutput({ output }) {
-      if (output.kind === "image") {
-        return {
-          type: "content",
-          value: [
-            {
-              type: "image-data",
-              data: output.data,
-              mediaType: output.mediaType
-            }
-          ]
-        };
-      }
-
-      return {
-        type: "content",
-        value: [
-          {
-            type: "text",
-            text: output.text
-          }
-        ]
-      };
-    }
-  });
+  const computerTool =
+    options.provider === "openai"
+      ? pdOpenAI.tools.computer({
+          desktop,
+          displayWidthPx: 1280,
+          displayHeightPx: 800,
+          screenshotTimeoutMs: 20_000
+        })
+      : pdAnthropic.tools.computer_20251124({
+          desktop,
+          displayWidthPx: 1280,
+          displayHeightPx: 800,
+          displayNumber: desktop.display,
+          enableZoom: true,
+          screenshotTimeoutMs: 20_000
+        });
 
   const agent = new Agent({
-    model: anthropic("claude-opus-4-6"),
+    model: options.provider === "openai" ? openai(modelId) : anthropic(modelId),
     instructions:
-      "Use the computer tool to complete the user prompt in the already-open browser window. Prefer direct actions and keep steps concise.",
-    stopWhen: stepCountIs(100),
+      "Use the computer tool to complete the user prompt in the already-open browser window. Prefer direct actions and keep steps concise. Do not ask any questions, just perform the task.",
+    stopWhen: stepCountIs(options.maxSteps),
     tools: {
       computer: computerTool
-    }
+    },
+    providerOptions: {
+      openai: {
+        truncation: "auto",
+      },
+    },
   });
 
   try {
-    const result = await agent.generate({ prompt: options.prompt });
-    process.stdout.write("\nagent output:\n");
-    process.stdout.write(`${result.text || "(no text output)"}\n`);
+    process.stdout.write("\nagent output (streaming):\n");
+    const result = await agent.stream({ prompt: options.prompt });
+    let emittedText = false;
+
+    for await (const textDelta of result.textStream) {
+      emittedText = true;
+      process.stdout.write(textDelta);
+    }
+
+    if (!emittedText) {
+      process.stdout.write("(no text output)");
+    }
+    process.stdout.write("\n");
   } finally {
     try {
       await recordingHandle.stop();

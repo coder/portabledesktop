@@ -1,28 +1,55 @@
 # portabledesktop
 
-`portabledesktop` is a Linux-first TypeScript library and CLI for launching and controlling a portable X/VNC desktop runtime.
+Run a real Linux desktop for AI agents.
+
+`portabledesktop` gives your agent a controllable desktop session with real GUI apps, mouse/keyboard actions, screenshots, and recordings.
+
+- Built for agent loops
+- API-first (CLI is mainly for local demos/debugging)
+- Linux runtime included in the npm package
 
 ## Install
 
 ```bash
-npm install portabledesktop
+pnpm add portabledesktop
 ```
 
-or
+For a Vercel AI SDK computer-use loop:
 
 ```bash
-bun add portabledesktop
+pnpm add portabledesktop ai @ai-sdk/anthropic
 ```
 
-## Quick Start (API)
+For OpenAI models, install `@ai-sdk/openai` instead of `@ai-sdk/anthropic`.
+
+## What You Get
+
+- Screenshots of the full desktop or a specific region.
+- MP4 recording with automatic idle-time trimming/speedup to keep replays short.
+- A browser client path for human-in-the-loop check-ins when the agent gets stuck.
+
+## Usage
+
+### Agent Loop
+
+Prereqs:
+
+- Linux host
+- `ANTHROPIC_API_KEY` in your environment
 
 ```ts
 import { spawn } from "node:child_process";
-import { start } from "portabledesktop";
+import { ToolLoopAgent as Agent, stepCountIs } from "ai";
+import { anthropic as anthropicProvider } from "@ai-sdk/anthropic";
+import { createDesktop } from "portabledesktop";
+import { anthropic } from "portabledesktop/ai";
 
-const desktop = await start({
-  geometry: "1280x800",
-  background: { color: "#202428" }
+const desktop = await createDesktop({
+  vnc: {
+    geometry: "1280x800",
+    desktopSizeMode: "fixed"
+  },
+  background: { color: "#1b1f24" }
 });
 
 const browser = spawn("google-chrome-stable", ["--new-window"], {
@@ -32,126 +59,115 @@ const browser = spawn("google-chrome-stable", ["--new-window"], {
 });
 browser.unref();
 
-await desktop.moveMouse(500, 340);
-await desktop.click("left");
-await desktop.type("hello from portabledesktop");
-
 const recording = await desktop.record({
-  file: "./session.mp4",
+  file: "./run.mp4",
   idleSpeedup: 10,
   idleMinDurationSec: 0.8,
   idleNoiseTolerance: "-45dB"
 });
-await recording.stop();
 
-const screenshot = await desktop.screenshot();
-await desktop.kill({ cleanup: true });
+const agent = new Agent({
+  model: anthropicProvider("claude-opus-4-6"),
+  stopWhen: stepCountIs(100),
+  tools: {
+    computer: anthropic.tools.computer_20251124({
+      desktop,
+      displayWidthPx: 1280,
+      displayHeightPx: 800,
+      displayNumber: desktop.display,
+      enableZoom: true
+    })
+  }
+});
+
+const result = await agent.stream({
+  prompt: "Complete the task using the open browser."
+});
+
+for await (const text of result.textStream) {
+  process.stdout.write(text);
+}
+process.stdout.write("\n");
+
+await recording.stop();
+await desktop.kill();
 ```
 
-## API Surface
+### Human-in-the-Loop Client
 
-- `start(options)`
-- `desktop.env`
-- `desktop.setBackground(color)`
-- `desktop.moveMouse(x, y)`
-- `desktop.mousePosition()`
-- `desktop.click(button?)`
-- `desktop.mouseDown(button?)`
-- `desktop.mouseUp(button?)`
-- `desktop.scroll(dx, dy)`
-- `desktop.type(text)`
-- `desktop.key(combo)`
-- `desktop.keyDown(key)`
-- `desktop.keyUp(key)`
-- `desktop.screenshot(options?)`
-- `desktop.record(options?) -> { pid, file, logPath, detached, stop() }`
-- `desktop.kill({ cleanup? })`
-
-`record(...)` supports idle acceleration:
-
-- `idleSpeedup`
-- `idleMinDurationSec`
-- `idleNoiseTolerance`
-
-## CLI
+Expose the desktop to a browser viewer by proxying TCP VNC traffic (`desktop.vncPort`) over WebSocket.
 
 ```bash
-portabledesktop up --json
-portabledesktop info
-portabledesktop open -- firefox
-portabledesktop mouse move 400 300
-portabledesktop keyboard type "hello"
-portabledesktop record start ./session.mp4
-portabledesktop record stop
-portabledesktop down
+pnpm add ws
 ```
 
-## Browser Client
+```ts
+import { createServer } from "node:http";
+import net from "node:net";
+import { WebSocketServer } from "ws";
 
-`portabledesktop/client` wraps noVNC primitives:
+const server = createServer();
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  if (req.url !== "/ws") {
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    const tcp = net.connect({ host: "127.0.0.1", port: desktop.vncPort });
+
+    ws.on("message", (data) => tcp.write(data as Buffer));
+    tcp.on("data", (chunk) => ws.send(chunk));
+
+    ws.on("close", () => tcp.destroy());
+    tcp.on("close", () => ws.close());
+    tcp.on("error", () => ws.close());
+  });
+});
+
+server.listen(6080);
+console.log("viewer websocket: ws://127.0.0.1:6080/ws");
+```
+
+Connect from the browser:
 
 ```ts
 import { createClient } from "portabledesktop/client";
 
-const client = createClient(document.getElementById("vnc")!, {
-  url: "ws://127.0.0.1:6080/websockify"
+const client = createClient(document.getElementById("viewer")!, {
+  url: "ws://127.0.0.1:6080/ws"
 });
 ```
 
-## Platform Support
+Defaults:
 
-- npm package runtime bundle is built and published for Linux `x64`.
-- Linux `arm64` runtime artifacts are published with every GitHub Release.
-- On `arm64`, point the library at a downloaded runtime via:
-  - `PORTABLEDESKTOP_RUNTIME_DIR=/path/to/runtime`
-  - or `start({ runtimeDir: "/path/to/runtime" })`
+- `shared: true` so multiple viewers/tools can attach to the same desktop.
+- `scaleViewport: true` so the desktop fits the container without changing desktop resolution.
 
-## Development
-
-Build JS + types:
+## CLI (Demo/Debug)
 
 ```bash
-bun run build
+portabledesktop up --json
+portabledesktop open -- firefox
+portabledesktop screenshot shot.png
+portabledesktop record run.mp4
+# Ctrl+C to stop recording
+portabledesktop down
 ```
 
-Build runtime artifact (`result/` contract):
+## Security
 
-```bash
-./scripts/build.sh
-```
+The remote desktop endpoint is unauthenticated by default (`SecurityTypes None`).
 
-Compatibility checks:
+Expose it only on trusted boundaries (localhost, private network, VPN, SSH tunnel).
 
-```bash
-./scripts/smoke.sh
-./scripts/matrix.sh
-```
+## Platform
 
-## Release Process
+- npm runtime bundle: Linux `x64`
+- Linux `arm64`: use a release runtime via `PORTABLEDESKTOP_RUNTIME_DIR=/path/to/runtime` or `createDesktop({ runtimeDir: "/path/to/runtime" })`
 
-Releases are tag-driven with GitHub Actions.
+## Example Project
 
-1. Bump `package.json` version.
-2. Push commit.
-3. Create and push a tag: `vX.Y.Z`.
-
-This triggers:
-
-- npm publish (`portabledesktop`)
-- GitHub Release creation
-- Release assets for Linux `x64` and Linux `arm64`:
-  - runtime archive + manifest
-  - compiled CLI binary
-
-Required repository secret:
-
-- `NPM_TOKEN` (publish token for npm)
-
-## Contributing
-
-See `CONTRIBUTING.md`.
-
-## Examples
-
-- `examples/agent`: Vercel AI SDK computer-use example.
-  - `cd examples/agent && bun install && bun run start`
+See `examples/agent` for a complete loop (viewer + run + recording output).

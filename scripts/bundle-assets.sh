@@ -5,20 +5,25 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 assets_dir="${repo_root}/assets"
 
-if [[ ! -s "${repo_root}/result/output.tar" || ! -s "${repo_root}/result/manifest.json" ]]; then
+if [[ ! -d "${repo_root}/result/output" || ! -s "${repo_root}/result/manifest.json" ]]; then
   "${script_dir}/build.sh"
 fi
 
 mkdir -p "${assets_dir}"
-# Nix-produced files are often read-only (0444). Install with stable writable
-# perms in the workspace so repeated prepack runs can overwrite in place.
-install -m 0644 "${repo_root}/result/output.tar" "${assets_dir}/output.tar"
+if [[ -d "${assets_dir}/output" ]]; then
+  chmod -R u+w "${assets_dir}/output" || true
+  rm -rf "${assets_dir}/output"
+fi
+rm -f "${assets_dir}/output.tar"
+mkdir -p "${assets_dir}/output"
+cp -a "${repo_root}/result/output/." "${assets_dir}/output/"
+chmod -R u+w "${assets_dir}/output" || true
 install -m 0644 "${repo_root}/result/manifest.json" "${assets_dir}/manifest.json"
 
-sha="$(sha256sum "${assets_dir}/output.tar" | awk '{print $1}')"
-size="$(stat -c '%s' "${assets_dir}/output.tar")"
+size="$(du -sb "${assets_dir}/output" | awk '{print $1}')"
+file_count="$(find "${assets_dir}/output" -type f | wc -l)"
 
-echo "bundled: ${assets_dir}/output.tar"
+echo "bundled: ${assets_dir}/output"
 echo "bundled: ${assets_dir}/manifest.json"
-echo "sha256: ${sha}"
+echo "files: ${file_count}"
 echo "size bytes: ${size}"
