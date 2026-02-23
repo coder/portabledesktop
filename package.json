@@ -1,6 +1,6 @@
 {
   "name": "portabledesktop",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Portable Linux desktop runtime with a TypeScript API and CLI",
   "license": "MIT",
   "repository": {
