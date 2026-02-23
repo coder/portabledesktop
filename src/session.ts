@@ -99,8 +99,14 @@ export interface CursorPosition {
 }
 
 export interface ScreenshotOptions {
+  /** Optional crop rectangle as [left, top, right, bottom]. */
   region?: [number, number, number, number];
+  /** When cropping, scale the cropped region back to full desktop geometry before output. */
   scaleToGeometry?: boolean;
+  /** Optional final output width after crop/resize filters. Must be set with targetHeight. */
+  targetWidth?: number | string;
+  /** Optional final output height after crop/resize filters. Must be set with targetWidth. */
+  targetHeight?: number | string;
   timeoutMs?: number | string;
 }
 
@@ -396,6 +402,14 @@ export class Desktop {
   async screenshot(options: ScreenshotOptions = {}): Promise<ScreenshotImage> {
     const { width, height } = await this.captureSize();
     const timeoutMs = normalizeInteger(options.timeoutMs, 20000);
+    const targetWidth =
+      options.targetWidth == null ? undefined : normalizePositiveInteger(options.targetWidth, 1, "targetWidth");
+    const targetHeight =
+      options.targetHeight == null ? undefined : normalizePositiveInteger(options.targetHeight, 1, "targetHeight");
+
+    if ((targetWidth == null) !== (targetHeight == null)) {
+      throw new Error("targetWidth and targetHeight must be provided together");
+    }
 
     const ffmpegPath = this.runtimeBinary("ffmpeg");
     const ffmpegArgs = [
@@ -411,6 +425,10 @@ export class Desktop {
       "1"
     ];
 
+    const filters: string[] = [];
+    let outputWidth = width;
+    let outputHeight = height;
+
     const region = options.region;
     if (region) {
       const [x1, y1, x2, y2] = region;
@@ -420,12 +438,26 @@ export class Desktop {
       const bottom = Math.max(top + 1, Math.min(height, Math.max(y1, y2)));
       const cropWidth = right - left;
       const cropHeight = bottom - top;
-      const filters = [`crop=${cropWidth}:${cropHeight}:${left}:${top}`];
+      filters.push(`crop=${cropWidth}:${cropHeight}:${left}:${top}`);
+      outputWidth = cropWidth;
+      outputHeight = cropHeight;
 
       if (options.scaleToGeometry === true) {
         filters.push(`scale=${width}:${height}:flags=neighbor`);
+        outputWidth = width;
+        outputHeight = height;
       }
+    }
 
+    if (
+      targetWidth != null &&
+      targetHeight != null &&
+      (targetWidth !== outputWidth || targetHeight !== outputHeight)
+    ) {
+      filters.push(`scale=${targetWidth}:${targetHeight}`);
+    }
+
+    if (filters.length > 0) {
       ffmpegArgs.push("-vf", filters.join(","));
     }
 

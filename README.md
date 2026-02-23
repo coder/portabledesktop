@@ -22,6 +22,22 @@ pnpm add portabledesktop ai @ai-sdk/anthropic
 
 For OpenAI models, install `@ai-sdk/openai` instead of `@ai-sdk/anthropic`.
 
+## Container Demo
+
+```bash
+export ANTHROPIC_API_KEY=<key>
+```
+
+```bash
+docker run -it --rm \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -p 5190:5190 \
+  ghcr.io/coder/portabledesktop \
+  "play a game of chess"
+```
+
+The container prints a viewer URL (typically `http://localhost:5190`) so you can watch and intervene while the agent runs.
+
 ## What You Get
 
 - Screenshots of the full desktop or a specific region.
@@ -140,11 +156,6 @@ const client = createClient(document.getElementById("viewer")!, {
   url: "ws://127.0.0.1:6080/ws"
 });
 ```
-
-Defaults:
-
-- `shared: true` so multiple viewers/tools can attach to the same desktop.
-- `scaleViewport: true` so the desktop fits the container without changing desktop resolution.
 
 ## CLI (Demo/Debug)
 

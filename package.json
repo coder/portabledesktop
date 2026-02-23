@@ -60,8 +60,10 @@
     "build:types": "bunx tsc -p tsconfig.types.json",
     "build:binary": "bun build src/bin/portabledesktop.ts --compile --outfile dist/bin/portabledesktop",
     "build": "rm -rf dist && mkdir -p dist && bun run lint && bun run build:js && bun run build:types",
-    "test": "bun run build",
+    "test": "bun run build && bun run test:bun",
+    "test:bun": "bun test tests",
     "bundle:assets": "./scripts/bundle-assets.sh",
+    "build-demo-image": "pack_file=\"$(npm pack --silent | tail -n 1)\" && mv \"$pack_file\" portabledesktop.tgz && docker build -f examples/demo/Dockerfile -t portabledesktop-demo .",
     "dev:cli": "bun run src/bin/portabledesktop.ts",
     "prepack": "bun run bundle:assets && bun run build"
   },

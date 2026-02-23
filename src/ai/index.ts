@@ -54,9 +54,26 @@ interface OpenAIComputerToolOptions extends DesktopComputerOptions {
 }
 
 const DEFAULT_SCREENSHOT_TIMEOUT_MS = 20_000;
+const ANTHROPIC_MAX_SCREENSHOT_LONG_EDGE_PX = 1568;
+const ANTHROPIC_MAX_SCREENSHOT_TOTAL_PIXELS = 1_150_000;
 
 interface ExecuteOptions {
   abortSignal?: AbortSignal;
+}
+
+interface CaptureViewport {
+  nativeLeft: number;
+  nativeTop: number;
+  nativeWidth: number;
+  nativeHeight: number;
+  scaledWidth: number;
+  scaledHeight: number;
+}
+
+interface CapturePlan {
+  region?: [number, number, number, number];
+  scaleToGeometry: boolean;
+  viewport: CaptureViewport;
 }
 
 function abortError(signal?: AbortSignal): Error {
@@ -129,6 +146,59 @@ function requirePositiveInteger(value: number, fieldName: string): number {
   return value;
 }
 
+function computeScaledScreenshotSize(width: number, height: number): { width: number; height: number } {
+  const longEdge = Math.max(width, height);
+  const totalPixels = width * height;
+  const longEdgeScale = ANTHROPIC_MAX_SCREENSHOT_LONG_EDGE_PX / longEdge;
+  const totalPixelsScale = Math.sqrt(ANTHROPIC_MAX_SCREENSHOT_TOTAL_PIXELS / totalPixels);
+  const scale = Math.min(1, longEdgeScale, totalPixelsScale);
+
+  if (scale >= 1) {
+    return { width, height };
+  }
+
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale))
+  };
+}
+
+function parsePngDimensions(data: string): { width: number; height: number } | null {
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(data, "base64");
+  } catch {
+    return null;
+  }
+
+  if (decoded.length < 24) {
+    return null;
+  }
+
+  const isPng =
+    decoded[0] === 0x89 &&
+    decoded[1] === 0x50 &&
+    decoded[2] === 0x4e &&
+    decoded[3] === 0x47 &&
+    decoded[4] === 0x0d &&
+    decoded[5] === 0x0a &&
+    decoded[6] === 0x1a &&
+    decoded[7] === 0x0a &&
+    decoded.toString("ascii", 12, 16) === "IHDR";
+
+  if (!isPng) {
+    return null;
+  }
+
+  const width = decoded.readUInt32BE(16);
+  const height = decoded.readUInt32BE(20);
+  if (width < 1 || height < 1) {
+    return null;
+  }
+
+  return { width, height };
+}
+
 function toModelOutput(output: ComputerToolOutput): {
   type: "content";
   value: Array<{ type: "image-data"; data: string; mediaType: "image/png" } | { type: "text"; text: string }>;
@@ -163,6 +233,8 @@ class DesktopComputer {
   public readonly displayHeightPx: number;
   public readonly screenshotTimeoutMs: number;
 
+  private latestViewport: CaptureViewport | null = null;
+
   constructor(options: DesktopComputerOptions) {
     this.desktop = options.desktop;
     this.displayWidthPx = requirePositiveInteger(options.displayWidthPx, "displayWidthPx");
@@ -171,16 +243,137 @@ class DesktopComputer {
   }
 
   private clampPoint(point: readonly [number, number]): [number, number] {
-    const x = Math.max(0, Math.min(this.displayWidthPx - 1, Math.round(point[0])));
-    const y = Math.max(0, Math.min(this.displayHeightPx - 1, Math.round(point[1])));
+    const rawX = Number.isFinite(point[0]) ? point[0] : 0;
+    const rawY = Number.isFinite(point[1]) ? point[1] : 0;
+    const x = Math.max(0, Math.min(this.displayWidthPx - 1, Math.round(rawX)));
+    const y = Math.max(0, Math.min(this.displayHeightPx - 1, Math.round(rawY)));
     return [x, y];
   }
 
-  private requirePoint(point: [number, number] | undefined, label: string): [number, number] {
+  private clampRegion(region: readonly [number, number, number, number]): [number, number, number, number] {
+    const safe = region.map((value) => (Number.isFinite(value) ? value : 0)) as [number, number, number, number];
+    const [x1, y1, x2, y2] = safe;
+    const left = Math.max(0, Math.min(this.displayWidthPx - 1, Math.floor(Math.min(x1, x2))));
+    const top = Math.max(0, Math.min(this.displayHeightPx - 1, Math.floor(Math.min(y1, y2))));
+    const right = Math.max(left + 1, Math.min(this.displayWidthPx, Math.ceil(Math.max(x1, x2))));
+    const bottom = Math.max(top + 1, Math.min(this.displayHeightPx, Math.ceil(Math.max(y1, y2))));
+    return [left, top, right, bottom];
+  }
+
+  private scaledToNativeAxis(value: number, scaledSpan: number, nativeSpan: number): number {
+    if (nativeSpan <= 0 || scaledSpan <= 0) {
+      return 0;
+    }
+    const safe = Number.isFinite(value) ? value : 0;
+    const clamped = Math.max(0, Math.min(scaledSpan - 1, safe));
+    return ((clamped + 0.5) * nativeSpan) / scaledSpan - 0.5;
+  }
+
+  private nativeToScaledAxis(value: number, nativeSpan: number, scaledSpan: number): number {
+    if (nativeSpan <= 0 || scaledSpan <= 0) {
+      return 0;
+    }
+    const safe = Number.isFinite(value) ? value : 0;
+    const clamped = Math.max(0, Math.min(nativeSpan - 1, safe));
+    return ((clamped + 0.5) * scaledSpan) / nativeSpan - 0.5;
+  }
+
+  private unscalePoint(point: readonly [number, number]): [number, number] {
+    if (!this.latestViewport) {
+      return [point[0], point[1]];
+    }
+
+    const viewport = this.latestViewport;
+    const localX = this.scaledToNativeAxis(point[0], viewport.scaledWidth, viewport.nativeWidth);
+    const localY = this.scaledToNativeAxis(point[1], viewport.scaledHeight, viewport.nativeHeight);
+    return [viewport.nativeLeft + localX, viewport.nativeTop + localY];
+  }
+
+  private scalePoint(point: readonly [number, number]): [number, number] {
+    if (!this.latestViewport) {
+      return [point[0], point[1]];
+    }
+
+    const viewport = this.latestViewport;
+    const localX = point[0] - viewport.nativeLeft;
+    const localY = point[1] - viewport.nativeTop;
+    const x = this.nativeToScaledAxis(localX, viewport.nativeWidth, viewport.scaledWidth);
+    const y = this.nativeToScaledAxis(localY, viewport.nativeHeight, viewport.scaledHeight);
+    return [Math.round(x), Math.round(y)];
+  }
+
+  private unscaleRegion(
+    region: readonly [number, number, number, number] | undefined
+  ): [number, number, number, number] | undefined {
+    if (!region) {
+      return undefined;
+    }
+
+    const [startX, startY] = this.clampPoint(this.unscalePoint([region[0], region[1]]));
+    const [endX, endY] = this.clampPoint(this.unscalePoint([region[2], region[3]]));
+    const left = Math.max(0, Math.min(startX, endX));
+    const top = Math.max(0, Math.min(startY, endY));
+    const right = Math.max(left + 1, Math.min(this.displayWidthPx, Math.max(startX, endX) + 1));
+    const bottom = Math.max(top + 1, Math.min(this.displayHeightPx, Math.max(startY, endY) + 1));
+    return [left, top, right, bottom];
+  }
+
+  private requirePoint(point: readonly [number, number] | undefined, label: string): [number, number] {
     if (!point) {
       throw new Error(`${label} is required for this action`);
     }
-    return this.clampPoint(point);
+    return this.clampPoint(this.unscalePoint(point));
+  }
+
+  private optionalPoint(point: readonly [number, number] | undefined): [number, number] | null {
+    if (!point) {
+      return null;
+    }
+    return this.clampPoint(this.unscalePoint(point));
+  }
+
+  private parseModifierKeys(text: string | undefined): string[] {
+    if (!text) {
+      return [];
+    }
+
+    return text
+      .split("+")
+      .map((key) => key.trim())
+      .filter((key) => key.length > 0);
+  }
+
+  private async withModifierKeys<T>(
+    modifiers: string | undefined,
+    signal: AbortSignal | undefined,
+    action: () => Promise<T>
+  ): Promise<T> {
+    const keys = this.parseModifierKeys(modifiers);
+    if (keys.length === 0) {
+      return action();
+    }
+
+    const pressedKeys: string[] = [];
+    try {
+      for (const key of keys) {
+        throwIfAborted(signal);
+        // eslint-disable-next-line no-await-in-loop
+        await this.run(() => this.desktop.keyDown(key), signal);
+        pressedKeys.push(key);
+      }
+
+      return await action();
+    } finally {
+      for (const key of [...pressedKeys].reverse()) {
+        try {
+          // Ensure modifiers are released even when execution is aborted.
+          // eslint-disable-next-line no-await-in-loop
+          await this.desktop.keyUp(key);
+        } catch {
+          // ignore key release cleanup failures
+        }
+      }
+    }
   }
 
   private async run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -190,19 +383,65 @@ class DesktopComputer {
 
   private async currentCursor(signal?: AbortSignal): Promise<[number, number]> {
     const position = await this.run(() => this.desktop.mousePosition(), signal);
-    return this.clampPoint([position.x, position.y]);
+    const nativePoint = this.clampPoint([position.x, position.y]);
+    const modelPoint = this.scalePoint(nativePoint);
+    return this.clampPoint(modelPoint);
+  }
+
+  private buildCapturePlan(region: [number, number, number, number] | undefined): CapturePlan {
+    if (!region) {
+      const scaled = computeScaledScreenshotSize(this.displayWidthPx, this.displayHeightPx);
+      return {
+        scaleToGeometry: false,
+        viewport: {
+          nativeLeft: 0,
+          nativeTop: 0,
+          nativeWidth: this.displayWidthPx,
+          nativeHeight: this.displayHeightPx,
+          scaledWidth: scaled.width,
+          scaledHeight: scaled.height
+        }
+      };
+    }
+
+    const [left, top, right, bottom] = this.clampRegion(region);
+    const scaled = computeScaledScreenshotSize(this.displayWidthPx, this.displayHeightPx);
+    return {
+      region: [left, top, right, bottom],
+      scaleToGeometry: true,
+      viewport: {
+        nativeLeft: left,
+        nativeTop: top,
+        nativeWidth: right - left,
+        nativeHeight: bottom - top,
+        scaledWidth: scaled.width,
+        scaledHeight: scaled.height
+      }
+    };
   }
 
   private async capturePng(region: [number, number, number, number] | undefined, signal?: AbortSignal): Promise<string> {
+    const capturePlan = this.buildCapturePlan(region);
+
     const screenshot = await this.run(
       () =>
         this.desktop.screenshot({
-        region,
-        scaleToGeometry: region != null,
-        timeoutMs: this.screenshotTimeoutMs
+          region: capturePlan.region,
+          scaleToGeometry: capturePlan.scaleToGeometry,
+          targetWidth: capturePlan.viewport.scaledWidth,
+          targetHeight: capturePlan.viewport.scaledHeight,
+          timeoutMs: this.screenshotTimeoutMs
         }),
       signal
     );
+
+    const actualDimensions = parsePngDimensions(screenshot.data);
+    this.latestViewport = {
+      ...capturePlan.viewport,
+      scaledWidth: actualDimensions?.width ?? capturePlan.viewport.scaledWidth,
+      scaledHeight: actualDimensions?.height ?? capturePlan.viewport.scaledHeight
+    };
+
     return screenshot.data;
   }
 
@@ -294,11 +533,12 @@ class DesktopComputer {
         return { kind: "text", text: "left mouse up" };
       }
       case "left_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
+        const point = this.optionalPoint(input.coordinate);
+        if (point) {
+          const [x, y] = point;
           await this.run(() => this.desktop.moveMouse(x, y), signal);
         }
-        await this.run(() => this.desktop.click("left"), signal);
+        await this.withModifierKeys(input.text, signal, () => this.run(() => this.desktop.click("left"), signal));
         return { kind: "text", text: "left click" };
       }
       case "left_click_drag": {
@@ -323,40 +563,45 @@ class DesktopComputer {
         return { kind: "text", text: `dragged from ${startX},${startY} to ${endX},${endY}` };
       }
       case "right_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
+        const point = this.optionalPoint(input.coordinate);
+        if (point) {
+          const [x, y] = point;
           await this.run(() => this.desktop.moveMouse(x, y), signal);
         }
-        await this.run(() => this.desktop.click("right"), signal);
+        await this.withModifierKeys(input.text, signal, () => this.run(() => this.desktop.click("right"), signal));
         return { kind: "text", text: "right click" };
       }
       case "middle_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
+        const point = this.optionalPoint(input.coordinate);
+        if (point) {
+          const [x, y] = point;
           await this.run(() => this.desktop.moveMouse(x, y), signal);
         }
-        await this.run(() => this.desktop.click("middle"), signal);
+        await this.withModifierKeys(input.text, signal, () => this.run(() => this.desktop.click("middle"), signal));
         return { kind: "text", text: "middle click" };
       }
       case "double_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
+        const point = this.optionalPoint(input.coordinate);
+        if (point) {
+          const [x, y] = point;
           await this.run(() => this.desktop.moveMouse(x, y), signal);
         }
-        await this.repeatClick("left", 2, signal);
+        await this.withModifierKeys(input.text, signal, () => this.repeatClick("left", 2, signal));
         return { kind: "text", text: "double click" };
       }
       case "triple_click": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
+        const point = this.optionalPoint(input.coordinate);
+        if (point) {
+          const [x, y] = point;
           await this.run(() => this.desktop.moveMouse(x, y), signal);
         }
-        await this.repeatClick("left", 3, signal);
+        await this.withModifierKeys(input.text, signal, () => this.repeatClick("left", 3, signal));
         return { kind: "text", text: "triple click" };
       }
       case "scroll": {
-        if (input.coordinate) {
-          const [x, y] = this.clampPoint(input.coordinate);
+        const point = this.optionalPoint(input.coordinate);
+        if (point) {
+          const [x, y] = point;
           await this.run(() => this.desktop.moveMouse(x, y), signal);
         }
 
@@ -371,7 +616,9 @@ class DesktopComputer {
                 ? { dx: -amount, dy: 0 }
                 : { dx: amount, dy: 0 };
 
-        await this.run(() => this.desktop.scroll(delta.dx, delta.dy), signal);
+        await this.withModifierKeys(input.text, signal, () =>
+          this.run(() => this.desktop.scroll(delta.dx, delta.dy), signal)
+        );
         return { kind: "text", text: `scrolled ${direction} by ${amount}` };
       }
       case "wait": {
@@ -385,7 +632,7 @@ class DesktopComputer {
       }
       case "zoom": {
         const zoomInput = input as AnthropicComputer20251124Action;
-        const data = await this.capturePng(zoomInput.region, signal);
+        const data = await this.capturePng(this.unscaleRegion(zoomInput.region), signal);
         return { kind: "image", data, mediaType: "image/png" };
       }
       default: {
