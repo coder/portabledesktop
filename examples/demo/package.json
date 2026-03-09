@@ -1,0 +1,18 @@
+{
+  "name": "@examples/demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bun build src/index.ts --target node --outdir dist --format esm",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.46",
+    "ai": "^6.0.97"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.3"
+  }
+}

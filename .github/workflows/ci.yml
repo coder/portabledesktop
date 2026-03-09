@@ -16,11 +16,19 @@ jobs:
         with:
           bun-version: "1.3.2"
 
-      - name: Install deps
-        run: bun install --frozen-lockfile
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: pd/go.mod
 
-      - name: Typecheck
-        run: bun run lint
+      - name: Build viewer JS
+        run: make viewer
+
+      - name: Go vet
+        run: make vet
+
+      - name: Go test
+        run: make test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main

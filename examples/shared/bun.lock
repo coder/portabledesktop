@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "@examples/agent",
+      "name": "@examples/shared",
       "dependencies": {
         "@ai-sdk/anthropic": "^3.0.46",
         "@ai-sdk/openai": "^3.0.30",

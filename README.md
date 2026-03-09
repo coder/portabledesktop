@@ -2,183 +2,85 @@
 
 Run a real Linux desktop for AI agents.
 
-`portabledesktop` gives your agent a controllable desktop session with real GUI apps, mouse/keyboard actions, screenshots, and recordings.
-
-- Built for agent loops
-- API-first (CLI is mainly for local demos/debugging)
-- Linux runtime included in the npm package
+`portabledesktop` is a standalone Go binary that embeds a compressed Linux
+runtime, unpacks it on first run, and manages desktop sessions directly. Give
+your agent a controllable desktop with real GUI apps, mouse/keyboard input,
+screenshots, and recordings — no containers or display servers to configure.
 
 ## Install
 
-```bash
-pnpm add portabledesktop
-```
-
-For a Vercel AI SDK computer-use loop:
+Download a prebuilt binary from
+[GitHub Releases](https://github.com/coder/portabledesktop/releases), or
+install with `go install`:
 
 ```bash
-pnpm add portabledesktop ai @ai-sdk/anthropic
+go install github.com/coder/portabledesktop/pd/cmd/portabledesktop@latest
 ```
 
-For OpenAI models, install `@ai-sdk/openai` instead of `@ai-sdk/anthropic`.
-
-## Container Demo
+## Quick Start
 
 ```bash
-export ANTHROPIC_API_KEY=<key>
-```
-
-```bash
-docker run -it --rm \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  -p 5190:5190 \
-  ghcr.io/coder/portabledesktop \
-  "play a game of chess"
-```
-
-The container prints a viewer URL (typically `http://localhost:5190`) so you can watch and intervene while the agent runs.
-
-## What You Get
-
-- Screenshots of the full desktop or a specific region.
-- MP4 recording with automatic idle-time trimming/speedup to keep replays short.
-- A browser client path for human-in-the-loop check-ins when the agent gets stuck.
-
-## Usage
-
-### Agent Loop
-
-Prereqs:
-
-- Linux host
-- `ANTHROPIC_API_KEY` in your environment
-
-```ts
-import { spawn } from "node:child_process";
-import { ToolLoopAgent as Agent, stepCountIs } from "ai";
-import { anthropic as anthropicProvider } from "@ai-sdk/anthropic";
-import { createDesktop } from "portabledesktop";
-import { anthropic } from "portabledesktop/ai";
-
-const desktop = await createDesktop({
-  vnc: {
-    geometry: "1280x800",
-    desktopSizeMode: "fixed"
-  },
-  background: { color: "#1b1f24" }
-});
-
-const browser = spawn("google-chrome-stable", ["--new-window"], {
-  env: desktop.env,
-  detached: true,
-  stdio: "ignore"
-});
-browser.unref();
-
-const recording = await desktop.record({
-  file: "./run.mp4",
-  idleSpeedup: 10,
-  idleMinDurationSec: 0.8,
-  idleNoiseTolerance: "-45dB"
-});
-
-const agent = new Agent({
-  model: anthropicProvider("claude-opus-4-6"),
-  stopWhen: stepCountIs(100),
-  tools: {
-    computer: anthropic.tools.computer_20251124({
-      desktop,
-      displayWidthPx: 1280,
-      displayHeightPx: 800,
-      displayNumber: desktop.display,
-      enableZoom: true
-    })
-  }
-});
-
-const result = await agent.stream({
-  prompt: "Complete the task using the open browser."
-});
-
-for await (const text of result.textStream) {
-  process.stdout.write(text);
-}
-process.stdout.write("\n");
-
-await recording.stop();
-await desktop.kill();
-```
-
-### Human-in-the-Loop Client
-
-Expose the desktop to a browser viewer by proxying TCP VNC traffic (`desktop.vncPort`) over WebSocket.
-
-```bash
-pnpm add ws
-```
-
-```ts
-import { createServer } from "node:http";
-import net from "node:net";
-import { WebSocketServer } from "ws";
-
-const server = createServer();
-const wss = new WebSocketServer({ noServer: true });
-
-server.on("upgrade", (req, socket, head) => {
-  if (req.url !== "/ws") {
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    const tcp = net.connect({ host: "127.0.0.1", port: desktop.vncPort });
-
-    ws.on("message", (data) => tcp.write(data as Buffer));
-    tcp.on("data", (chunk) => ws.send(chunk));
-
-    ws.on("close", () => tcp.destroy());
-    tcp.on("close", () => ws.close());
-    tcp.on("error", () => ws.close());
-  });
-});
-
-server.listen(6080);
-console.log("viewer websocket: ws://127.0.0.1:6080/ws");
-```
-
-Connect from the browser:
-
-```ts
-import { createClient } from "portabledesktop/client";
-
-const client = createClient(document.getElementById("viewer")!, {
-  url: "ws://127.0.0.1:6080/ws"
-});
-```
-
-## CLI (Demo/Debug)
-
-```bash
+# Start a desktop session.
 portabledesktop up --json
-portabledesktop open -- firefox
+
+# Launch an app inside the session.
+portabledesktop open -- google-chrome-stable --new-window
+
+# Take a screenshot.
 portabledesktop screenshot shot.png
+
+# Record the session to MP4 (Ctrl+C to stop).
 portabledesktop record run.mp4
-# Ctrl+C to stop recording
+
+# Tear down the session.
 portabledesktop down
 ```
 
+`up --json` prints session metadata (display number, VNC port, environment
+variables) so agent tooling can connect programmatically.
+
+## Human-in-the-Loop Viewer
+
+`portabledesktop viewer` starts a local HTTP server that serves a noVNC
+client, letting a human watch and interact with the desktop in a browser:
+
+```bash
+portabledesktop viewer
+# Opens http://localhost:6080 by default.
+```
+
+This is useful for debugging agent runs or intervening when the agent gets
+stuck.
+
 ## Security
 
-The remote desktop endpoint is unauthenticated by default (`SecurityTypes None`).
-
-Expose it only on trusted boundaries (localhost, private network, VPN, SSH tunnel).
+The VNC endpoint is **unauthenticated by default**
+(`SecurityTypes None`). Expose it only on trusted boundaries — localhost,
+a private network, VPN, or SSH tunnel.
 
 ## Platform
 
-- npm runtime bundle: Linux `x64`
-- Linux `arm64`: use a release runtime via `PORTABLEDESKTOP_RUNTIME_DIR=/path/to/runtime` or `createDesktop({ runtimeDir: "/path/to/runtime" })`
+| Architecture | Supported |
+|--------------|-----------|
+| Linux x64    | ✓         |
+| Linux arm64  | ✓         |
 
-## Example Project
+## Environment Variables
 
-See `examples/agent` for a complete loop (viewer + run + recording output).
+| Variable                    | Description                       |
+|-----------------------------|-----------------------------------|
+| `PORTABLEDESKTOP_RUNTIME_DIR` | Skip unpack, use this runtime dir |
+| `PORTABLEDESKTOP_STATE_FILE`  | Override default state file path  |
+
+## Development
+
+See [`pd/README.md`](pd/README.md) for build instructions, Makefile targets,
+and development workflow.
+
+## Examples
+
+- [`examples/demo/`](examples/demo/) — Docker container that runs an AI agent
+  loop (Anthropic Claude + computer-use tool) on the virtual desktop.
+- [`examples/agent/`](examples/agent/) — Bun/TypeScript agent that drives the
+  desktop via the CLI binary, with support for both Anthropic and OpenAI
+  providers.

@@ -1,0 +1,14 @@
+{
+  "name": "@portabledesktop/viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/entry.ts --outfile dist/viewer-client.js --target=browser --format=esm"
+  },
+  "dependencies": {
+    "@novnc/novnc": "1.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
