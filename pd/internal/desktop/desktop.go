@@ -211,11 +211,23 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		OpenboxPid:        openboxPid,
 	}
 
-	// 7. Optional background.
-	if opts.Background != nil {
-		if err := d.SetBackground(*opts.Background); err != nil {
-			return nil, fmt.Errorf("set background: %w", err)
+	// 7. Background: use caller's choice, or default to the
+	// runtime wallpaper image, or fall back to a solid color.
+	if opts.Background == nil {
+		wallpaper := runtime.ResolveRuntimeData(runtimeDir, "portabledesktop/wallpaper.jpg")
+		if wallpaper != "" {
+			opts.Background = &BackgroundOptions{
+				ImagePath: wallpaper,
+				Mode:      "fill",
+			}
+		} else {
+			opts.Background = &BackgroundOptions{
+				Color: "#1e1e2e",
+			}
 		}
+	}
+	if err := d.SetBackground(*opts.Background); err != nil {
+		return nil, fmt.Errorf("set background: %w", err)
 	}
 
 	return d, nil

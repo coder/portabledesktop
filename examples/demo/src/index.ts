@@ -29,7 +29,7 @@ import {
 const BIN = process.env.PORTABLEDESKTOP_BIN || "portabledesktop";
 const VIEWER_HOST = process.env.VIEWER_HOST || "0.0.0.0";
 const VIEWER_PORT = normalizePort(process.env.PORT, 5190, "PORT");
-const WALLPAPER_PATH = process.env.WALLPAPER_PATH || "/app/wallpaper.jpg";
+const WALLPAPER_PATH = process.env.WALLPAPER_PATH || "";
 const DEFAULT_PROMPT =
   "Play a game of chess in the browser. Explain each move briefly as you play and finish after at least 10 moves.";
 const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-6";
