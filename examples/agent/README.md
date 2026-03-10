@@ -5,7 +5,7 @@ Minimal computer-use demo using `portabledesktop`, `portabledesktop/ai`, and Ver
 ## What it does
 
 1. Starts a desktop session.
-2. Starts a live VNC viewer with `Bun.serve` and opens it in your host browser.
+2. Starts a live VNC viewer and opens it in your host browser.
 3. Runs the agent for your `--prompt` and streams text to stdout as it arrives.
 4. Saves an MP4 recording and opens that MP4 in your host browser.
 

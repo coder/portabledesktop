@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "../shared/**/*.ts"]
+  "include": ["computer.ts"]
 }

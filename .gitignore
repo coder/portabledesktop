@@ -1,10 +1,10 @@
-assets
 result
-node_modules
-dist
 tmp
-*.tgz
 .env.local
 .env
 .env.*
 !.env.example
+pd/cmd/portabledesktop/runtime.tar.zst
+pd/internal/viewer/viewer-client.js
+**/node_modules/
+**/dist/

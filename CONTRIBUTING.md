@@ -1,23 +1,31 @@
-# Contributing to `portabledesktop`
+## Contributing to `portabledesktop`
 
-Thanks for contributing.
-
-## Scope
+### Scope
 
 This repository has two primary deliverables:
 
-1. The npm package (`portabledesktop`) with TypeScript API + CLI.
+1. The Go binary (`portabledesktop`) — standalone CLI.
 2. The Nix runtime artifact (`result/output.tar`, `result/output/`, `result/manifest.json`).
 
-Changes should keep both deliverables working.
-
-## Local Setup
+### Local Setup
 
 ```bash
-bun install
-bun run build
-./scripts/build.sh
-./scripts/smoke.sh --skip-build
+# Build viewer JS (requires Bun)
+make viewer
+
+# Build without embedded runtime (for development)
+make build-dev
+
+# Set runtime directory manually
+export PORTABLEDESKTOP_RUNTIME_DIR=/path/to/runtime/output
+./pd/dist/portabledesktop up --json
+```
+
+For full builds with embedded runtime:
+
+```bash
+./scripts/build.sh    # Build Nix runtime
+make build            # Builds runtime + viewer + Go binary
 ```
 
 For broader compatibility checks:
@@ -26,41 +34,22 @@ For broader compatibility checks:
 ./scripts/matrix.sh --skip-build
 ```
 
-## Building Libraries on Top of `portabledesktop`
+### Testing
 
-If you are creating another library that depends on `portabledesktop`, prefer composition over wrappers around shell scripts.
-
-Recommended pattern:
-
-1. Start a desktop with `start(...)`.
-2. Launch child processes with `node:child_process` and `env: desktop.env`.
-3. Use the typed desktop methods (`moveMouse`, `click`, `type`, `screenshot`, `record`, etc.) for interaction.
-4. Call `desktop.kill({ cleanup: true })` in `finally`.
-
-Minimal shape:
-
-```ts
-import { spawn } from "node:child_process";
-import { start } from "portabledesktop";
-
-const desktop = await start();
-try {
-  const app = spawn("firefox", [], { env: desktop.env, detached: true, stdio: "ignore" });
-  app.unref();
-  await desktop.type("hello");
-} finally {
-  await desktop.kill({ cleanup: true });
-}
+```bash
+make vet
+make test
 ```
 
-## Pull Requests
+### Pull Requests
 
 Before opening a PR:
 
-1. Run `bun run build`.
-2. Run `./scripts/build.sh`.
-3. Run `./scripts/smoke.sh --skip-build`.
-4. If runtime-related, run `./scripts/matrix.sh --skip-build`.
+1. Run `make vet`.
+2. Run `make test`.
+3. Run `make build-dev` (or `make build` for full build).
+4. If runtime-related, run `./scripts/smoke.sh --skip-build`.
+5. If runtime-related, run `./scripts/matrix.sh --skip-build`.
 
 Include in your PR description:
 
@@ -68,10 +57,9 @@ Include in your PR description:
 2. Compatibility impact (x64/arm64, distro notes).
 3. Exact commands used for verification.
 
-## Release Model
+### Release Model
 
 Releases are tag-driven:
 
-1. Bump `package.json` version.
-2. Create and push tag `vX.Y.Z`.
-3. GitHub Actions publishes npm + GitHub release artifacts.
+1. Create and push tag `vX.Y.Z`.
+2. GitHub Actions builds Go binaries + GitHub release artifacts.

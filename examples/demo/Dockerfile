@@ -8,17 +8,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates dumb-init chromium \
   && rm -rf /var/lib/apt/lists/*
 
-COPY examples/demo/index.mjs /app/index.mjs
 COPY scripts/wallpaper.jpg /app/wallpaper.jpg
-COPY portabledesktop.tgz /app/portabledesktop.tgz
 
-RUN npm install --omit=dev --no-fund --no-audit \
-  "/app/portabledesktop.tgz" \
-  "ai" \
-  "@ai-sdk/anthropic" \
-  "ws"
+# Copy the pre-built portabledesktop Go binary.
+COPY pd/dist/portabledesktop /usr/local/bin/portabledesktop
+
+# Copy the pre-built demo bundle (produced by `bun build` locally).
+COPY examples/demo/dist/index.js /app/index.js
 
 EXPOSE 5190
 
-ENTRYPOINT ["dumb-init", "--", "node", "/app/index.mjs"]
+ENTRYPOINT ["dumb-init", "--", "node", "/app/index.js"]
 CMD []

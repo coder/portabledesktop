@@ -2,7 +2,6 @@
   "name": "@examples/agent",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.3.2",
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "start": "bun run src/index.ts",
@@ -12,7 +11,6 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
     "@ai-sdk/openai": "^3.0.30",
-    "@novnc/novnc": "1.5.0",
     "ai": "^6.0.97"
   },
   "devDependencies": {

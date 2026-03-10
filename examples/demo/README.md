@@ -8,8 +8,13 @@ The image launches Chromium inside the desktop session.
 Run these commands from the repository root:
 
 ```bash
-pack_file="$(npm pack --silent | tail -n 1)"
-mv "${pack_file}" portabledesktop.tgz
+# Build the Go binary
+make build
+
+# Build the demo bundle
+cd examples/demo && bun install && bun run build && cd ../..
+
+# Build the Docker image
 docker build -f examples/demo/Dockerfile -t portabledesktop-demo .
 ```
 
@@ -28,9 +33,3 @@ docker run -it --rm \
 ```
 
 Open the printed viewer URL in your browser (usually `http://localhost:5190`).
-
-If you want to clean up the local tarball after testing:
-
-```bash
-rm -f portabledesktop.tgz
-```
