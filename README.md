@@ -10,12 +10,7 @@ screenshots, and recordings — no containers or display servers to configure.
 ## Install
 
 Download a prebuilt binary from
-[GitHub Releases](https://github.com/coder/portabledesktop/releases), or
-install with `go install`:
-
-```bash
-go install github.com/coder/portabledesktop/pd/cmd/portabledesktop@latest
-```
+[GitHub Releases](https://github.com/coder/portabledesktop/releases).
 
 ## Quick Start
 
