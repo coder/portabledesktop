@@ -664,6 +664,7 @@ export class DesktopComputer {
   ): Promise<ComputerToolOutput> {
     const signal = options.abortSignal;
     throwIfAborted(signal);
+    console.log(input)
 
     switch (input.action) {
       case "key": {

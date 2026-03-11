@@ -39,7 +39,7 @@ const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 800;
 const DEFAULT_VIEWER_PORT = 6080;
 const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-6";
-const DEFAULT_OPENAI_MODEL = "computer-use-preview";
+const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 const DEFAULT_MAX_STEPS = 100;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
