@@ -886,10 +886,14 @@
                   ! -name 'fontconfig' \
                   ! -name 'fonts' \
                   ! -name 'openbox' \
+                  ! -name 'portabledesktop' \
                   ! -name 'themes' \
                   ! -name 'xkeyboard-config-2' \
                   -exec rm -rf {} +
               fi
+
+              mkdir -p "$runtimePayloadRoot/share/portabledesktop"
+              cp "${./assets/wallpaper.jpg}" "$runtimePayloadRoot/share/portabledesktop/wallpaper.jpg"
 
               if [ -f "$runtimePayloadRoot/etc/fonts/fonts.conf" ]; then
                 # Replace build-time /nix/store font dirs with the bundled runtime font dir.

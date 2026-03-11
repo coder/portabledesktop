@@ -29,3 +29,14 @@ func ResolveRuntimeBinary(runtimeDir, name string) string {
 	}
 	return name
 }
+
+// ResolveRuntimeData returns the full path to a file under
+// runtimeDir/share/<subpath> if it exists. Returns an empty
+// string if the file is not found.
+func ResolveRuntimeData(runtimeDir, subpath string) string {
+	p := filepath.Join(runtimeDir, "share", subpath)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
+}

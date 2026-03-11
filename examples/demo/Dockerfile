@@ -8,8 +8,6 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates dumb-init chromium \
   && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/wallpaper.jpg /app/wallpaper.jpg
-
 # Copy the pre-built portabledesktop Go binary.
 COPY pd/dist/portabledesktop /usr/local/bin/portabledesktop
 
