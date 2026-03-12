@@ -9,10 +9,12 @@ import (
 )
 
 // MoveMouse moves the mouse pointer to the given absolute
-// coordinates, waiting for the move to complete.
+// coordinates.
 func (d *Desktop) MoveMouse(x, y int) error {
+	// we don't use --sync because it very often times out
+	// even though the mouse moved
 	return d.runTool("xdotool", []string{
-		"mousemove", "--sync", strconv.Itoa(x), strconv.Itoa(y),
+		"mousemove", strconv.Itoa(x), strconv.Itoa(y),
 	})
 }
 
