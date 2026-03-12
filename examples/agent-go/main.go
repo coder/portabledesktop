@@ -37,7 +37,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	defaultPrompt         = "Navigate to news.ycombinator.com and tell me what the top story is."
+	defaultPrompt         = "Navigate to news.ycombinator.com and tell me what the top comments on the top 3 stories are. Never wait for a page to load more than 1 second."
 	defaultWidth          = 1280
 	defaultHeight         = 800
 	defaultViewerPort     = 6080
@@ -285,11 +285,10 @@ func resolveDesktopBrowser() string {
 	return ""
 }
 
-func launchDesktopBrowser(url string) {
+func launchDesktopBrowser(url string) error {
 	browser := resolveDesktopBrowser()
 	if browser == "" {
-		fmt.Fprintln(os.Stderr, "warning: no browser found inside the desktop")
-		return
+		return fmt.Errorf("no browser found inside the desktop")
 	}
 
 	args := []string{browser, "--no-first-run", "--disable-session-crashed-bubble"}
@@ -306,7 +305,7 @@ func launchDesktopBrowser(url string) {
 	}
 
 	allArgs := append([]string{"open", "--"}, args...)
-	_ = pdExecVoid(allArgs...)
+	return pdExecVoid(allArgs...)
 }
 
 // ---------------------------------------------------------------------------
@@ -332,17 +331,6 @@ func computeScaledSize(w, h int) (int, int) {
 // Computer action types (matching Anthropic computer_20251124)
 // ---------------------------------------------------------------------------
 
-type computerAction struct {
-	Action          string   `json:"action"`
-	Coordinate      *[2]int  `json:"coordinate,omitempty"`
-	StartCoordinate *[2]int  `json:"start_coordinate,omitempty"`
-	Text            string   `json:"text,omitempty"`
-	ScrollDirection string   `json:"scroll_direction,omitempty"`
-	ScrollAmount    *int     `json:"scroll_amount,omitempty"`
-	Duration        *float64 `json:"duration,omitempty"`
-	Region          *[4]int  `json:"region,omitempty"`
-}
-
 // ---------------------------------------------------------------------------
 // Computer tool execution
 // ---------------------------------------------------------------------------
@@ -353,18 +341,18 @@ func clampCoord(x, y int) (int, int) {
 
 // executeComputerAction runs a single computer action and returns a tool
 // result that can be fed back into the conversation.
-func executeComputerAction(input computerAction) ([]fantasy.ToolResultOutputContent, error) {
+func executeComputerAction(input anthropic.ComputerUseInput) ([]fantasy.ToolResultOutputContent, error) {
 	switch input.Action {
-	case "key":
+	case anthropic.ActionKey:
 		if input.Text == "" {
 			return textResult("text is required for key action"), nil
 		}
 		if err := pdExecVoid("keyboard", "key", input.Text); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult(fmt.Sprintf("pressed key combo: %s", input.Text)), nil
+		return captureScreenshotResult(nil)
 
-	case "hold_key":
+	case anthropic.ActionHoldKey:
 		if input.Text == "" {
 			return errorResult("text is required for hold_key action"), nil
 		}
@@ -384,8 +372,8 @@ func executeComputerAction(input computerAction) ([]fantasy.ToolResultOutputCont
 			pressed = append(pressed, k)
 		}
 		dur := 250 * time.Millisecond
-		if input.Duration != nil {
-			dur = time.Duration(*input.Duration * float64(time.Second))
+		if input.Duration > 0 {
+			dur = time.Duration(input.Duration) * time.Second
 			if dur < 10*time.Millisecond {
 				dur = 10 * time.Millisecond
 			}
@@ -394,127 +382,92 @@ func executeComputerAction(input computerAction) ([]fantasy.ToolResultOutputCont
 		for i := len(pressed) - 1; i >= 0; i-- {
 			_ = pdExecVoid("keyboard", "up", pressed[i])
 		}
-		return textResult(fmt.Sprintf("held keys for %dms: %s", dur.Milliseconds(), input.Text)), nil
+		return captureScreenshotResult(nil)
 
-	case "type":
+	case anthropic.ActionType:
 		if input.Text == "" {
 			return errorResult("text is required for type action"), nil
 		}
 		if err := pdExecVoid("keyboard", "type", input.Text); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult(fmt.Sprintf("typed %d characters", len(input.Text))), nil
+		return captureScreenshotResult(nil)
 
-	case "cursor_position":
-		out, err := pdExec("cursor", "--json")
-		if err != nil {
-			return errorResult(err.Error()), nil
-		}
-		var pos struct {
-			X int `json:"x"`
-			Y int `json:"y"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &pos); err != nil {
-			return errorResult(err.Error()), nil
-		}
-		return textResult(fmt.Sprintf("cursor at %d,%d", pos.X, pos.Y)), nil
-
-	case "mouse_move":
-		if input.Coordinate == nil {
-			return errorResult("coordinate is required for mouse_move"), nil
-		}
-		x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
+	case anthropic.ActionMouseMove:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
 		if err := pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y)); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult(fmt.Sprintf("moved mouse to %d,%d", x, y)), nil
+		return captureScreenshotResult(nil)
 
-	case "left_click":
-		if input.Coordinate != nil {
-			x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
-			if err := pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y)); err != nil {
-				return errorResult(err.Error()), nil
-			}
+	case anthropic.ActionLeftClick:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
+		if err := pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y)); err != nil {
+			return errorResult(err.Error()), nil
 		}
 		if err := pdExecVoid("mouse", "click", "left"); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult("left click"), nil
+		return captureScreenshotResult(nil)
 
-	case "left_click_drag":
-		if input.StartCoordinate == nil {
-			return errorResult("start_coordinate is required for left_click_drag"), nil
-		}
-		if input.Coordinate == nil {
-			return errorResult("coordinate is required for left_click_drag"), nil
-		}
-		sx, sy := clampCoord(input.StartCoordinate[0], input.StartCoordinate[1])
-		ex, ey := clampCoord(input.Coordinate[0], input.Coordinate[1])
+	case anthropic.ActionLeftClickDrag:
+		sx, sy := clampCoord(int(input.StartCoordinate[0]), int(input.StartCoordinate[1]))
+		ex, ey := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
 		_ = pdExecVoid("mouse", "move", strconv.Itoa(sx), strconv.Itoa(sy))
 		_ = pdExecVoid("mouse", "down", "left")
 		_ = pdExecVoid("mouse", "move", strconv.Itoa(ex), strconv.Itoa(ey))
 		_ = pdExecVoid("mouse", "up", "left")
-		return textResult(fmt.Sprintf("dragged from %d,%d to %d,%d", sx, sy, ex, ey)), nil
+		return captureScreenshotResult(nil)
 
-	case "left_mouse_down":
+	case anthropic.ActionLeftMouseDown:
 		if err := pdExecVoid("mouse", "down", "left"); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult("left mouse down"), nil
+		return captureScreenshotResult(nil)
 
-	case "left_mouse_up":
+	case anthropic.ActionLeftMouseUp:
 		if err := pdExecVoid("mouse", "up", "left"); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult("left mouse up"), nil
+		return captureScreenshotResult(nil)
 
-	case "right_click":
-		if input.Coordinate != nil {
-			x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
-			_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
-		}
+	case anthropic.ActionRightClick:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
+		_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
 		if err := pdExecVoid("mouse", "click", "right"); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult("right click"), nil
+		return captureScreenshotResult(nil)
 
-	case "middle_click":
-		if input.Coordinate != nil {
-			x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
-			_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
-		}
+	case anthropic.ActionMiddleClick:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
+		_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
 		if err := pdExecVoid("mouse", "click", "middle"); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult("middle click"), nil
+		return captureScreenshotResult(nil)
 
-	case "double_click":
-		if input.Coordinate != nil {
-			x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
-			_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
-		}
+	case anthropic.ActionDoubleClick:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
+		_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
 		_ = pdExecVoid("mouse", "click", "left")
 		_ = pdExecVoid("mouse", "click", "left")
-		return textResult("double click"), nil
+		return captureScreenshotResult(nil)
 
-	case "triple_click":
-		if input.Coordinate != nil {
-			x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
-			_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
-		}
+	case anthropic.ActionTripleClick:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
+		_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
 		_ = pdExecVoid("mouse", "click", "left")
 		_ = pdExecVoid("mouse", "click", "left")
 		_ = pdExecVoid("mouse", "click", "left")
-		return textResult("triple click"), nil
+		return captureScreenshotResult(nil)
 
-	case "scroll":
-		if input.Coordinate != nil {
-			x, y := clampCoord(input.Coordinate[0], input.Coordinate[1])
-			_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
-		}
-		amount := 3
-		if input.ScrollAmount != nil {
-			amount = max(1, *input.ScrollAmount)
+	case anthropic.ActionScroll:
+		x, y := clampCoord(int(input.Coordinate[0]), int(input.Coordinate[1]))
+		_ = pdExecVoid("mouse", "move", strconv.Itoa(x), strconv.Itoa(y))
+		amount := int(input.ScrollAmount)
+		if amount < 1 {
+			amount = 3
 		}
 		dir := input.ScrollDirection
 		if dir == "" {
@@ -534,22 +487,23 @@ func executeComputerAction(input computerAction) ([]fantasy.ToolResultOutputCont
 		if err := pdExecVoid("mouse", "scroll", strconv.Itoa(dx), strconv.Itoa(dy)); err != nil {
 			return errorResult(err.Error()), nil
 		}
-		return textResult(fmt.Sprintf("scrolled %s by %d", dir, amount)), nil
-
-	case "wait":
-		dur := 1.0
-		if input.Duration != nil {
-			dur = *input.Duration
-		}
-		ms := max(10, int(math.Round(dur*1000)))
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		return textResult(fmt.Sprintf("waited %dms", ms)), nil
-
-	case "screenshot":
 		return captureScreenshotResult(nil)
 
-	case "zoom":
-		return captureScreenshotResult(input.Region)
+	case anthropic.ActionWait:
+		durSec := input.Duration
+		if durSec < 1 {
+			durSec = 1
+		}
+		ms := max(10, int(durSec)*1000)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		return captureScreenshotResult(nil)
+
+	case anthropic.ActionScreenshot:
+		return captureScreenshotResult(nil)
+
+	case anthropic.ActionZoom:
+		region := &[4]int{int(input.Region[0]), int(input.Region[1]), int(input.Region[2]), int(input.Region[3])}
+		return captureScreenshotResult(region)
 
 	default:
 		return errorResult(fmt.Sprintf("unsupported action: %s", input.Action)), nil
@@ -623,6 +577,16 @@ func captureScreenshotResult(region *[4]int) ([]fantasy.ToolResultOutputContent,
 			MediaType: "image/png",
 		},
 	}, nil
+}
+
+// formatAction returns a human-readable summary of the non-empty
+// fields in a computerAction, suitable for log output.
+func formatAction(a anthropic.ComputerUseInput) string {
+	marshalled, err := json.Marshal(a)
+	if err != nil {
+		return fmt.Sprintf("error marshalling action: %v", err)
+	}
+	return string(marshalled)
 }
 
 // ---------------------------------------------------------------------------
@@ -717,8 +681,8 @@ func runAgentLoop(ctx context.Context, model fantasy.LanguageModel, computerTool
 		for _, tc := range toolCalls {
 			fmt.Fprintf(os.Stderr, "  [step %d] tool: %s (id=%s)\n", step, tc.ToolName, tc.ToolCallID)
 
-			var action computerAction
-			if err := json.Unmarshal([]byte(tc.Input), &action); err != nil {
+			action, err := anthropic.ParseComputerUseInput(tc.Input)
+			if err != nil {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
 					Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("invalid input: %v", err)},
@@ -726,9 +690,11 @@ func runAgentLoop(ctx context.Context, model fantasy.LanguageModel, computerTool
 				continue
 			}
 
-			fmt.Fprintf(os.Stderr, "  [step %d] action: %s\n", step, action.Action)
-
+			fmt.Fprintf(os.Stderr, "  [step %d] action: %s\n", step, formatAction(action))
+			start := time.Now()
 			results, err := executeComputerAction(action)
+			elapsed := time.Since(start)
+			fmt.Fprintf(os.Stderr, "  [step %d] action executed in %s\n", step, elapsed)
 			if err != nil {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
@@ -767,13 +733,12 @@ func runAgentLoop(ctx context.Context, model fantasy.LanguageModel, computerTool
 // Main
 // ---------------------------------------------------------------------------
 
-func main() {
+func entrypoint() error {
 	flag.Parse()
 	loadEnvLocal()
 
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		fmt.Fprintln(os.Stderr, "ANTHROPIC_API_KEY is missing. Set it in environment or .env.local at repo root.")
-		os.Exit(1)
+		return fmt.Errorf("ANTHROPIC_API_KEY is missing. Set it in environment or .env.local at repo root.")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -794,8 +759,7 @@ func main() {
 		"#1f252f",
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("start desktop: %w", err)
 	}
 	defer session.stop()
 
@@ -813,26 +777,31 @@ func main() {
 
 	// Start the viewer.
 	viewerCmd := startViewer(defaultViewerPort)
+	defer func() {
+		if viewerCmd.Process != nil {
+			_ = viewerCmd.Process.Kill()
+		}
+	}()
 	viewerURL := fmt.Sprintf("http://127.0.0.1:%d", defaultViewerPort)
 	fmt.Printf("viewer: %s\n", viewerURL)
 	openHostBrowser(viewerURL)
 
 	// Let the desktop settle, then launch a browser inside it.
 	time.Sleep(1500 * time.Millisecond)
-	launchDesktopBrowser("about:blank")
+	if err := launchDesktopBrowser("about:blank"); err != nil {
+		return fmt.Errorf("launch desktop browser: %w", err)
+	}
 	time.Sleep(2000 * time.Millisecond)
 
 	// Set up the Anthropic provider and model.
 	provider, err := anthropic.New(anthropic.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "could not create provider: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("create provider: %w", err)
 	}
 
 	model, err := provider.LanguageModel(ctx, *flagModel)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "could not get language model: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("get language model: %w", err)
 	}
 
 	// Create the computer use tool (provider-defined) for the model.
@@ -855,17 +824,21 @@ func main() {
 	fmt.Printf("messages: %s\n", messagesPath)
 
 	if err := runAgentLoop(ctx, model, computerTool, *flagPrompt, *flagMaxSteps, messagesPath); err != nil {
-		fmt.Fprintf(os.Stderr, "agent loop failed: %v\n", err)
+		return fmt.Errorf("agent loop: %w", err)
 	}
 
 	// Finalize.
 	recording.stop()
 	fmt.Printf("\nsaved recording: %s\n", recordingPath)
 
-	if viewerCmd.Process != nil {
-		_ = viewerCmd.Process.Kill()
-	}
-
 	openHostBrowser("file://" + recordingPath)
 	fmt.Printf("opened recording: file://%s\n", recordingPath)
+	return nil
+}
+
+func main() {
+	if err := entrypoint(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }
