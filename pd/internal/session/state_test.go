@@ -15,6 +15,7 @@ func TestStateRoundTrip(t *testing.T) {
 
 	xvncPid := 1234
 	openboxPid := 5678
+	dockPid := 9012
 
 	original := StoredDesktopState{
 		RuntimeDir:        "/run/user/1000",
@@ -28,6 +29,7 @@ func TestStateRoundTrip(t *testing.T) {
 		CleanupSessionDir: true,
 		XvncPid:           &xvncPid,
 		OpenboxPid:        &openboxPid,
+		DockPid:           &dockPid,
 		Detached:          true,
 		StateFile:         "/tmp/state.json",
 		StartedAt:         "2025-01-15T10:30:00Z",
@@ -58,6 +60,9 @@ func TestStateRoundTrip(t *testing.T) {
 
 	require.NotNil(t, loaded.OpenboxPid)
 	assert.Equal(t, *original.OpenboxPid, *loaded.OpenboxPid)
+
+	require.NotNil(t, loaded.DockPid)
+	assert.Equal(t, *original.DockPid, *loaded.DockPid)
 }
 
 func TestStateRead_MissingFields(t *testing.T) {

@@ -4,9 +4,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    plank-reloaded = {
+      url = "github:zquestz/plank-reloaded/c35f5105ca37bcf657aee9828b0e93a5cf2f9628";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, plank-reloaded }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -102,6 +106,49 @@
               [ "--enable-dri --enable-dri2 --enable-dri3 --enable-glx \\" ]
               postBuildXkb;
         });
+        plankReloadedPackage = pkgs.stdenv.mkDerivation rec {
+          pname = "plank-reloaded";
+          version = "0.11.166";
+          src = plank-reloaded;
+          patches = [ "${plank-reloaded}/nix-hide-in-pantheon.patch" ];
+          nativeBuildInputs = [
+            pkgs.desktop-file-utils
+            pkgs.glib
+            pkgs.meson
+            pkgs.ninja
+            pkgs.pkg-config
+            pkgs.vala
+            pkgs.wrapGAppsHook3
+          ];
+          buildInputs = [
+            pkgs.bamf
+            pkgs.dconf
+            pkgs.git
+            pkgs.glib
+            pkgs.gnome-menus
+            pkgs.gnome-settings-daemon
+            pkgs.gtk3
+            pkgs.libgee
+            pkgs.libwnck
+            pkgs.pango
+          ];
+          mesonFlags = [
+            "-Denable-apport=false"
+            "-Denable-dbusmenu=no"
+            "-Denable-barriers=no"
+            "-Dproduction-release=true"
+          ];
+          postInstall = ''
+            if [ -d "$out/share/glib-2.0/schemas" ]; then
+              glib-compile-schemas "$out/share/glib-2.0/schemas"
+            fi
+          '';
+          meta = with lib; {
+            description = "A simple dock for X11 environments";
+            license = licenses.gpl3Only;
+            platforms = platforms.linux;
+          };
+        };
         runtimeFfmpegRecorder = pkgs.ffmpeg-full.override {
           # Start from an empty feature profile and only enable what recording
           # from X11 needs.
@@ -252,6 +299,12 @@
             # provide a different libav* set.
             name = "ffmpeg-lib";
             package = runtimeFfmpegRecorder.lib;
+            requiredStatic = false;
+            includeInStatic = false;
+          }
+          {
+            name = "plank-reloaded";
+            package = plankReloadedPackage;
             requiredStatic = false;
             includeInStatic = false;
           }
@@ -462,6 +515,8 @@
               copy_path_contents "$component_path"
             done
 
+            chmod -R u+w "$out"
+
             while IFS= read -r link_path; do
               link_target="$(readlink "$link_path")"
               case "$link_target" in
@@ -617,11 +672,17 @@
                 fi
 
                 if [ -d "$runtime_root/share" ]; then
-                  if [ -n "''${XDG_DATA_DIRS:-}" ]; then
-                    export XDG_DATA_DIRS="$runtime_root/share:''${XDG_DATA_DIRS}"
-                  else
-                    export XDG_DATA_DIRS="$runtime_root/share"
-                  fi
+                  runtime_xdg_data_dirs="$runtime_root/share"
+                  case ":''${XDG_DATA_DIRS:-}:" in
+                    *":$runtime_xdg_data_dirs:"*)
+                      ;;
+                    ::)
+                      export XDG_DATA_DIRS="/usr/local/share:/usr/share:$runtime_xdg_data_dirs"
+                      ;;
+                    *)
+                      export XDG_DATA_DIRS="''${XDG_DATA_DIRS}:$runtime_xdg_data_dirs"
+                      ;;
+                  esac
                 fi
 
                 if [ -d "$runtime_root/etc/xdg" ]; then
@@ -662,6 +723,122 @@
                 fi
 
                 exec "$openbox_real" "$@"
+              '';
+            };
+            plankWrapperScript = pkgs.writeTextFile {
+              name = "portabledesktop-runtime-plank-wrapper";
+              executable = true;
+              text = ''
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                script_dir="$(cd "$(dirname "''${BASH_SOURCE[0]}")" && pwd)"
+                runtime_root="$(cd "$script_dir/.." && pwd)"
+                runtime_library_path="$runtime_root/lib:$runtime_root/lib64:$runtime_root/usr/lib:$runtime_root/usr/lib64"
+                plank_real="$script_dir/plank.real"
+
+                if [ ! -x "$plank_real" ]; then
+                  echo "error: missing plank payload binary: $plank_real" >&2
+                  exit 1
+                fi
+
+                if [ -d "$runtime_root/share/glib-2.0/schemas" ] && [ -z "''${GSETTINGS_SCHEMA_DIR:-}" ]; then
+                  export GSETTINGS_SCHEMA_DIR="$runtime_root/share/glib-2.0/schemas"
+                fi
+                if [ -z "''${GSETTINGS_BACKEND:-}" ]; then
+                  export GSETTINGS_BACKEND=keyfile
+                fi
+                if [ -d "$runtime_root/share" ]; then
+                  runtime_xdg_data_dirs="$runtime_root/share"
+                  case ":''${XDG_DATA_DIRS:-}:" in
+                    *":$runtime_xdg_data_dirs:"*)
+                      ;;
+                    ::)
+                      export XDG_DATA_DIRS="/usr/local/share:/usr/share:$runtime_xdg_data_dirs"
+                      ;;
+                    *)
+                      export XDG_DATA_DIRS="''${XDG_DATA_DIRS}:$runtime_xdg_data_dirs"
+                      ;;
+                  esac
+                fi
+                if [ -f "$runtime_root/etc/fonts/fonts.conf" ]; then
+                  export FONTCONFIG_FILE="$runtime_root/etc/fonts/fonts.conf"
+                fi
+                if [ -d "$runtime_root/etc/fonts" ]; then
+                  export FONTCONFIG_PATH="$runtime_root/etc/fonts"
+                fi
+                if [ -d "$runtime_root/lib/plank/docklets" ] && [ -z "''${PLANK_DOCKLET_DIRS:-}" ]; then
+                  export PLANK_DOCKLET_DIRS="$runtime_root/lib/plank/docklets"
+                fi
+                if [ -f "$runtime_root/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" ] && [ -z "''${GDK_PIXBUF_MODULE_FILE:-}" ]; then
+                  export GDK_PIXBUF_MODULE_FILE="$runtime_root/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+                fi
+
+                loader_path=""
+                for candidate in \
+                  "$runtime_root/lib64/ld-linux-x86-64.so.2" \
+                  "$runtime_root/lib/ld-linux-x86-64.so.2" \
+                  "$runtime_root/lib/ld-linux-aarch64.so.1" \
+                  "$runtime_root/lib64/ld-linux-aarch64.so.1"; do
+                  if [ -f "$candidate" ]; then
+                    loader_path="$candidate"
+                    break
+                  fi
+                done
+
+                if [ -n "$loader_path" ]; then
+                  exec "$loader_path" --library-path "$runtime_library_path" "$plank_real" "$@"
+                fi
+
+                if [ -n "''${LD_LIBRARY_PATH:-}" ]; then
+                  export LD_LIBRARY_PATH="$runtime_library_path:''${LD_LIBRARY_PATH}"
+                else
+                  export LD_LIBRARY_PATH="$runtime_library_path"
+                fi
+
+                exec "$plank_real" "$@"
+              '';
+            };
+            gioLaunchDesktopWrapperScript = pkgs.writeTextFile {
+              name = "portabledesktop-runtime-gio-launch-desktop-wrapper";
+              executable = true;
+              text = ''
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                script_dir="$(cd "$(dirname "''${BASH_SOURCE[0]}")" && pwd)"
+                runtime_root="$(cd "$script_dir/.." && pwd)"
+                runtime_library_path="$runtime_root/lib:$runtime_root/lib64:$runtime_root/usr/lib:$runtime_root/usr/lib64"
+                gio_launch_desktop_real="$runtime_root/libexec/gio-launch-desktop.real"
+
+                if [ ! -x "$gio_launch_desktop_real" ]; then
+                  echo "error: missing gio-launch-desktop payload binary: $gio_launch_desktop_real" >&2
+                  exit 1
+                fi
+
+                loader_path=""
+                for candidate in \
+                  "$runtime_root/lib64/ld-linux-x86-64.so.2" \
+                  "$runtime_root/lib/ld-linux-x86-64.so.2" \
+                  "$runtime_root/lib/ld-linux-aarch64.so.1" \
+                  "$runtime_root/lib64/ld-linux-aarch64.so.1"; do
+                  if [ -f "$candidate" ]; then
+                    loader_path="$candidate"
+                    break
+                  fi
+                done
+
+                if [ -n "$loader_path" ]; then
+                  exec "$loader_path" --library-path "$runtime_library_path" "$gio_launch_desktop_real" "$@"
+                fi
+
+                if [ -n "''${LD_LIBRARY_PATH:-}" ]; then
+                  export LD_LIBRARY_PATH="$runtime_library_path:''${LD_LIBRARY_PATH}"
+                else
+                  export LD_LIBRARY_PATH="$runtime_library_path"
+                fi
+
+                exec "$gio_launch_desktop_real" "$@"
               '';
             };
             xkbcompWrapperScript = pkgs.writeTextFile {
@@ -761,8 +938,9 @@
               pkgs.findutils
               pkgs.gnugrep
               pkgs.gnutar
+              pkgs.patchelf
               pkgs.zstd
-            ] ++ lib.optional patchRuntimeElf pkgs.patchelf;
+            ];
 
             installPhase = ''
               runHook preInstall
@@ -801,9 +979,32 @@
                 esac
               done < <(find "${runtimeRoot}" -type l -print)
 
-              if [ "${if patchRuntimeElf then "1" else "0"}" = "1" ]; then
-                ensure_runtime_payload_copy
+              ensure_runtime_payload_copy
 
+              elf_needed_rewritten=0
+              while IFS= read -r candidate_path; do
+                if ! readelf -h "$candidate_path" >/dev/null 2>&1; then
+                  continue
+                fi
+
+                if ! readelf -l "$candidate_path" | grep -Eq '(^|[[:space:]])DYNAMIC([[:space:]]|$)'; then
+                  continue
+                fi
+
+                while IFS= read -r needed_path; do
+                  case "$needed_path" in
+                    /*)
+                      needed_soname="$(basename "$needed_path")"
+                      patchelf --replace-needed "$needed_path" "$needed_soname" "$candidate_path"
+                      elf_needed_rewritten=$((elf_needed_rewritten + 1))
+                      ;;
+                  esac
+                done < <(readelf -d "$candidate_path" 2>/dev/null | sed -nE 's/.*Shared library: \[([^]]+)\].*/\1/p')
+              done < <(find "$runtimePayloadRoot" -type f -print)
+
+              echo "rewrote absolute NEEDED entries: $elf_needed_rewritten" >&2
+
+              if [ "${if patchRuntimeElf then "1" else "0"}" = "1" ]; then
                 runtimeRunpath='${hostLibrarySearchPath}'
                 hostInterpreter='${hostDynamicLinker}'
 
@@ -865,17 +1066,27 @@
                   ! -name 'Xvnc' \
                   ! -name 'xkbcomp' \
                   ! -name 'openbox' \
+                  ! -name 'plank' \
+                  ! -name 'gio-launch-desktop' \
                   ! -name 'xsetroot' \
                   ! -name 'xwallpaper' \
                   ! -name 'xdotool' \
                   ! -name 'ffmpeg' \
                   ! -name '.openbox-wrapped' \
+                  ! -name '.plank-wrapped' \
                   -delete
+              fi
+
+              if [ -d "$runtimePayloadRoot/libexec" ]; then
+                find "$runtimePayloadRoot/libexec" -mindepth 1 -maxdepth 1 \
+                  \( -type f -o -type l \) \
+                  ! -name 'gio-launch-desktop' \
+                  -delete
+                find "$runtimePayloadRoot/libexec" -mindepth 1 -type d -exec rm -rf {} +
               fi
 
               rm -rf \
                 "$runtimePayloadRoot/sbin" \
-                "$runtimePayloadRoot/libexec" \
                 "$runtimePayloadRoot/include" \
                 "$runtimePayloadRoot/example" \
                 "$runtimePayloadRoot/x86_64-unknown-linux-gnu"
@@ -883,9 +1094,14 @@
               if [ -d "$runtimePayloadRoot/share" ]; then
                 find "$runtimePayloadRoot/share" -mindepth 1 -maxdepth 1 \
                   ! -name 'X11' \
+                  ! -name 'applications' \
                   ! -name 'fontconfig' \
                   ! -name 'fonts' \
+                  ! -name 'glib-2.0' \
+                  ! -name 'gsettings-schemas' \
+                  ! -name 'icons' \
                   ! -name 'openbox' \
+                  ! -name 'plank' \
                   ! -name 'portabledesktop' \
                   ! -name 'themes' \
                   ! -name 'xkeyboard-config-2' \
@@ -992,6 +1208,24 @@
                 fi
               fi
 
+              if [ -d "$runtimePayloadRoot/share/icons" ]; then
+                find "$runtimePayloadRoot/share/icons" -mindepth 1 -maxdepth 1 \
+                  ! -name 'hicolor' \
+                  -exec rm -rf {} +
+              fi
+
+              if [ -d "$runtimePayloadRoot/share/applications" ]; then
+                find "$runtimePayloadRoot/share/applications" -mindepth 1 -maxdepth 1 \
+                  ! -name 'net.launchpad.plank.desktop' \
+                  -delete
+              fi
+
+              if [ -d "$runtimePayloadRoot/share/plank/themes" ]; then
+                find "$runtimePayloadRoot/share/plank/themes" -mindepth 1 -maxdepth 1 \
+                  ! -name 'Default' \
+                  -exec rm -rf {} +
+              fi
+
               # ffmpeg closure carries optional WildMIDI/Freepats sample banks and
               # AJA SDK source/header trees that are not required for desktop capture.
               rm -rf \
@@ -1071,6 +1305,10 @@
               queue_runtime_dep "$runtimePayloadRoot/bin/Xvnc"
               queue_runtime_dep "$runtimePayloadRoot/bin/xkbcomp"
               queue_runtime_dep "$runtimePayloadRoot/bin/openbox"
+              queue_runtime_dep "$runtimePayloadRoot/bin/plank"
+              queue_runtime_dep "$runtimePayloadRoot/bin/.plank-wrapped"
+              queue_runtime_dep "$runtimePayloadRoot/bin/gio-launch-desktop"
+              queue_runtime_dep "$runtimePayloadRoot/libexec/gio-launch-desktop"
               queue_runtime_dep "$runtimePayloadRoot/bin/xsetroot"
               queue_runtime_dep "$runtimePayloadRoot/bin/xwallpaper"
               queue_runtime_dep "$runtimePayloadRoot/bin/xdotool"
@@ -1081,6 +1319,12 @@
                 while IFS= read -r module_elf; do
                   queue_runtime_dep "$module_elf"
                 done < <(find "$runtimePayloadRoot/lib/xorg/modules" -type f -name '*.so*' -print)
+              fi
+
+              if [ -d "$runtimePayloadRoot/lib/gdk-pixbuf-2.0/2.10.0/loaders" ]; then
+                while IFS= read -r loader_module; do
+                  queue_runtime_dep "$loader_module"
+                done < <(find "$runtimePayloadRoot/lib/gdk-pixbuf-2.0/2.10.0/loaders" -type f -name '*.so*' -print)
               fi
 
               if [ "''${#runtimeLibDirs[@]}" -gt 0 ]; then
@@ -1165,6 +1409,19 @@
                 find "''${runtimeLibDirs[@]}" -type d -empty -delete || true
               fi
 
+              if [ -d "$runtimePayloadRoot/share/gsettings-schemas" ]; then
+                mkdir -p "$runtimePayloadRoot/share/glib-2.0/schemas"
+                while IFS= read -r schema_file; do
+                  cp "$schema_file" "$runtimePayloadRoot/share/glib-2.0/schemas/"
+                done < <(find "$runtimePayloadRoot/share/gsettings-schemas" -type f -path '*/glib-2.0/schemas/*.gschema.xml' -print)
+              fi
+
+              if [ -d "$runtimePayloadRoot/share/glib-2.0/schemas" ]; then
+                ${pkgs.glib.dev}/bin/glib-compile-schemas "$runtimePayloadRoot/share/glib-2.0/schemas"
+              fi
+
+              rm -rf "$runtimePayloadRoot/share/gsettings-schemas"
+
               rm -rf \
                 "$runtimePayloadRoot/nix-support" \
                 "$runtimePayloadRoot/var" \
@@ -1222,6 +1479,33 @@
                 chmod 0755 "$runtimePayloadRoot/bin/openbox"
               fi
 
+              if [ -e "$runtimePayloadRoot/bin/plank.real" ]; then
+                echo "error: runtime payload unexpectedly already contains bin/plank.real" >&2
+                exit 1
+              fi
+
+              plank_real_source=""
+              if [ -x "$runtimePayloadRoot/bin/.plank-wrapped" ]; then
+                plank_real_source="$runtimePayloadRoot/bin/.plank-wrapped"
+              elif [ -x "$runtimePayloadRoot/bin/plank" ]; then
+                plank_real_source="$runtimePayloadRoot/bin/plank"
+              fi
+
+              if [ -n "$plank_real_source" ]; then
+                mv "$plank_real_source" "$runtimePayloadRoot/bin/plank.real"
+                rm -f "$runtimePayloadRoot/bin/plank" "$runtimePayloadRoot/bin/.plank-wrapped"
+                cp "${plankWrapperScript}" "$runtimePayloadRoot/bin/plank"
+                chmod 0755 "$runtimePayloadRoot/bin/plank"
+              fi
+
+              if [ -x "$runtimePayloadRoot/libexec/gio-launch-desktop" ]; then
+                mv "$runtimePayloadRoot/libexec/gio-launch-desktop" "$runtimePayloadRoot/libexec/gio-launch-desktop.real"
+                cp "${gioLaunchDesktopWrapperScript}" "$runtimePayloadRoot/libexec/gio-launch-desktop"
+                chmod 0755 "$runtimePayloadRoot/libexec/gio-launch-desktop"
+                mkdir -p "$runtimePayloadRoot/bin"
+                ln -sf ../libexec/gio-launch-desktop "$runtimePayloadRoot/bin/gio-launch-desktop"
+              fi
+
               for tool_name in ffmpeg xsetroot xwallpaper xdotool; do
                 tool_path="$runtimePayloadRoot/bin/$tool_name"
                 tool_real_path="$runtimePayloadRoot/bin/$tool_name.real"
@@ -1232,6 +1516,22 @@
                   chmod 0755 "$tool_path"
                 fi
               done
+
+              librsvg_cache_src="${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+              runtime_pixbuf_dir="$runtimePayloadRoot/lib/gdk-pixbuf-2.0/2.10.0"
+              runtime_pixbuf_loaders_dir="$runtime_pixbuf_dir/loaders"
+              svg_loader_src="${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader_svg.so"
+
+              if [ -f "$svg_loader_src" ]; then
+                mkdir -p "$runtime_pixbuf_loaders_dir"
+                cp "$svg_loader_src" "$runtime_pixbuf_loaders_dir/"
+              fi
+
+              if [ -f "$librsvg_cache_src" ]; then
+                mkdir -p "$runtime_pixbuf_dir"
+                sed 's|"/nix/store/[^"]*/lib/gdk-pixbuf-2.0/2.10.0/loaders/|"@@RUNTIME_LIB@@/gdk-pixbuf-2.0/2.10.0/loaders/|g' \
+                  "$librsvg_cache_src" > "$runtime_pixbuf_dir/loaders.cache"
+              fi
 
               tar \
                 --sort=name \

@@ -20,6 +20,7 @@ func newUpCommand(stdout, stderr io.Writer) *cobra.Command {
 		jsonOutput      bool
 		foreground      bool
 		noOpenbox       bool
+		noDock          bool
 		xvncArgs        []string
 		runtimeDir      string
 		sessionDir      string
@@ -82,6 +83,7 @@ func newUpCommand(stdout, stderr io.Writer) *cobra.Command {
 				DesktopSizeMode: desktopSizeMode,
 				XvncArgs:        xvncArgs,
 				Openbox:         desktop.BoolPtr(!noOpenbox),
+				Dock:            desktop.BoolPtr(!noDock),
 				Detached:        !foreground,
 			}
 
@@ -112,6 +114,7 @@ func newUpCommand(stdout, stderr io.Writer) *cobra.Command {
 			// Save state.
 			xvncPid := d.XvncPid
 			openboxPid := d.OpenboxPid
+			dockPid := d.DockPid
 			state := session.StoredDesktopState{
 				RuntimeDir:        d.RuntimeDir,
 				Display:           d.Display,
@@ -129,6 +132,9 @@ func newUpCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			if openboxPid != 0 {
 				state.OpenboxPid = &openboxPid
+			}
+			if dockPid != 0 {
+				state.DockPid = &dockPid
 			}
 			if err := session.SaveState(stateFile, state); err != nil {
 				return fmt.Errorf("save state: %w", err)
@@ -167,6 +173,7 @@ func newUpCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output session info as JSON")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "run in foreground; stop on signal")
 	cmd.Flags().BoolVar(&noOpenbox, "no-openbox", false, "do not start the openbox window manager")
+	cmd.Flags().BoolVar(&noDock, "no-dock", false, "do not start the application dock")
 	cmd.Flags().StringSliceVar(&xvncArgs, "xvnc-arg", nil, "extra argument(s) to pass to Xvnc")
 	cmd.Flags().StringVar(&runtimeDir, "runtime-dir", "", "path to runtime directory (skip embedded unpack)")
 	cmd.Flags().StringVar(&sessionDir, "session-dir", "", "path to session directory")
