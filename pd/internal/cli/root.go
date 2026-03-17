@@ -86,5 +86,8 @@ func loadDesktopFromState(
 	if state.OpenboxPid != nil {
 		d.OpenboxPid = *state.OpenboxPid
 	}
+	if state.DockPid != nil {
+		d.DockPid = *state.DockPid
+	}
 	return d, &state, nil
 }

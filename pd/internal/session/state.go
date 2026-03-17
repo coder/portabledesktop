@@ -21,6 +21,7 @@ type StoredDesktopState struct {
 	CleanupSessionDir bool   `json:"cleanupSessionDirOnStop"`
 	XvncPid           *int   `json:"xvncPid"`
 	OpenboxPid        *int   `json:"openboxPid"`
+	DockPid           *int   `json:"dockPid"`
 	Detached          bool   `json:"detached"`
 	StateFile         string `json:"stateFile"`
 	StartedAt         string `json:"startedAt"`

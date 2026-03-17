@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -58,5 +59,66 @@ func TestBuildEnv_LangPreservedIfUtf8(t *testing.T) {
 
 	if m["LANG"] != "en_US.UTF-8" {
 		t.Fatalf("expected LANG=en_US.UTF-8, got %s", m["LANG"])
+	}
+}
+
+func TestBuildEnv_XDGDataDirsFallback(t *testing.T) {
+	orig := os.Getenv("XDG_DATA_DIRS")
+	os.Unsetenv("XDG_DATA_DIRS")
+	defer func() {
+		if orig != "" {
+			os.Setenv("XDG_DATA_DIRS", orig)
+		} else {
+			os.Unsetenv("XDG_DATA_DIRS")
+		}
+	}()
+
+	runtimeDir := "/opt/runtime"
+	env := BuildEnv(runtimeDir, 1, nil)
+	m := envMap(env)
+	want := strings.Join([]string{"/usr/local/share", "/usr/share", filepath.Join(runtimeDir, "share")}, ":")
+	if m["XDG_DATA_DIRS"] != want {
+		t.Fatalf("expected XDG_DATA_DIRS=%q, got %q", want, m["XDG_DATA_DIRS"])
+	}
+}
+
+func TestBuildEnv_XDGDataDirsAppendsRuntimeShare(t *testing.T) {
+	orig := os.Getenv("XDG_DATA_DIRS")
+	os.Setenv("XDG_DATA_DIRS", "/custom/share:/usr/share")
+	defer func() {
+		if orig != "" {
+			os.Setenv("XDG_DATA_DIRS", orig)
+		} else {
+			os.Unsetenv("XDG_DATA_DIRS")
+		}
+	}()
+
+	runtimeDir := "/opt/runtime"
+	env := BuildEnv(runtimeDir, 1, nil)
+	m := envMap(env)
+	want := strings.Join([]string{"/custom/share", "/usr/share", filepath.Join(runtimeDir, "share")}, ":")
+	if m["XDG_DATA_DIRS"] != want {
+		t.Fatalf("expected XDG_DATA_DIRS=%q, got %q", want, m["XDG_DATA_DIRS"])
+	}
+}
+
+func TestBuildEnv_XDGDataDirsDeduplicatesRuntimeShare(t *testing.T) {
+	orig := os.Getenv("XDG_DATA_DIRS")
+	runtimeDir := "/opt/runtime"
+	runtimeShare := filepath.Join(runtimeDir, "share")
+	os.Setenv("XDG_DATA_DIRS", strings.Join([]string{"/usr/share", runtimeShare, "/usr/share"}, ":"))
+	defer func() {
+		if orig != "" {
+			os.Setenv("XDG_DATA_DIRS", orig)
+		} else {
+			os.Unsetenv("XDG_DATA_DIRS")
+		}
+	}()
+
+	env := BuildEnv(runtimeDir, 1, nil)
+	m := envMap(env)
+	want := strings.Join([]string{"/usr/share", runtimeShare}, ":")
+	if m["XDG_DATA_DIRS"] != want {
+		t.Fatalf("expected XDG_DATA_DIRS=%q, got %q", want, m["XDG_DATA_DIRS"])
 	}
 }

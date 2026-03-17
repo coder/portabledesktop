@@ -31,6 +31,7 @@ type Desktop struct {
 	Detached          bool
 	XvncPid           int
 	OpenboxPid        int
+	DockPid           int
 	recordingCmd      *exec.Cmd
 }
 
@@ -49,6 +50,7 @@ type StartOptions struct {
 	DesktopSizeMode string
 	XvncArgs        []string
 	Openbox         *bool
+	Dock            *bool
 	Detached        bool
 	Background      *BackgroundOptions
 }
@@ -196,6 +198,16 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		openboxPid = openboxCmd.Process.Pid
 	}
 
+	var dockPid int
+	if opts.Dock == nil || *opts.Dock {
+		pid, err := StartDock(runtimeDir, display, sessionDir, opts.Detached)
+		if err != nil {
+			_ = appendDockLog(sessionDir, "dock startup failed: %v", err)
+		} else {
+			dockPid = pid
+		}
+	}
+
 	d := &Desktop{
 		RuntimeDir:        runtimeDir,
 		Display:           display,
@@ -209,6 +221,7 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		Detached:          opts.Detached,
 		XvncPid:           xvncPid,
 		OpenboxPid:        openboxPid,
+		DockPid:           dockPid,
 	}
 
 	// 7. Background: use caller's choice, or default to the
@@ -256,6 +269,12 @@ func (d *Desktop) Kill(opts KillOptions) error {
 
 	var errs []error
 
+	if d.DockPid != 0 {
+		if err := killPid(d.DockPid, 5*time.Second); err != nil {
+			errs = append(errs, fmt.Errorf("kill dock: %w", err))
+		}
+		d.DockPid = 0
+	}
 	if d.OpenboxPid != 0 {
 		if err := killPid(d.OpenboxPid, 5*time.Second); err != nil {
 			errs = append(errs, fmt.Errorf("kill openbox: %w", err))

@@ -10,8 +10,9 @@ import (
 
 // BuildEnv builds an environment variable slice for child processes.
 // It starts from os.Environ(), prepends runtimeDir/bin to PATH, sets
-// DISPLAY, ensures LANG and LC_CTYPE contain a UTF-8 locale, and
-// applies any extra overrides.
+// DISPLAY, ensures LANG and LC_CTYPE contain a UTF-8 locale, ensures
+// XDG_DATA_DIRS includes the runtime share directory after host data
+// directories, and applies any extra overrides.
 func BuildEnv(runtimeDir string, display int, extraEnv map[string]string) []string {
 	env := envMap(os.Environ())
 
@@ -24,6 +25,7 @@ func BuildEnv(runtimeDir string, display int, extraEnv map[string]string) []stri
 	}
 
 	env["DISPLAY"] = fmt.Sprintf(":%d", display)
+	env["XDG_DATA_DIRS"] = buildXDGDataDirs(runtimeDir, env["XDG_DATA_DIRS"])
 
 	// Ensure a UTF-8 LANG.
 	langVal := env["LANG"]
@@ -43,6 +45,43 @@ func BuildEnv(runtimeDir string, display int, extraEnv map[string]string) []stri
 	}
 
 	return envSlice(env)
+}
+
+func buildXDGDataDirs(runtimeDir, current string) string {
+	runtimeShare := filepath.Join(runtimeDir, "share")
+	if strings.TrimSpace(current) == "" {
+		return strings.Join([]string{"/usr/local/share", "/usr/share", runtimeShare}, ":")
+	}
+
+	parts := splitPathList(current)
+	parts = append(parts, runtimeShare)
+	return strings.Join(uniqueStrings(parts), ":")
+}
+
+func splitPathList(value string) []string {
+	parts := strings.Split(value, string(os.PathListSeparator))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // containsUTF8 reports whether s contains "utf-8" or "utf8"
