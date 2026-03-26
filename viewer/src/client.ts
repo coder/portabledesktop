@@ -16,7 +16,11 @@ export interface CreateClientOptions extends RfbOptions {
   focusOnClick?: boolean;
 }
 
-type RfbCtor = new (target: Element, urlOrChannel: UrlOrChannel, options?: RfbOptions) => RFB;
+type RfbCtor = new (
+  target: Element,
+  urlOrChannel: UrlOrChannel,
+  options?: RfbOptions,
+) => RFB;
 
 function resolveRfbConstructor(moduleValue: unknown): RfbCtor {
   if (typeof moduleValue === "function") {
@@ -49,7 +53,10 @@ function resolveRfbConstructor(moduleValue: unknown): RfbCtor {
 
 const RFBConstructor = resolveRfbConstructor(RfbModule);
 
-export function createClient(targetElement: Element, options: CreateClientOptions): RFB {
+export function createClient(
+  targetElement: Element,
+  options: CreateClientOptions,
+): RFB {
   if (!targetElement) {
     throw new Error("createClient requires a target DOM element");
   }
@@ -68,7 +75,7 @@ export function createClient(targetElement: Element, options: CreateClientOption
 
   const client = new RFBConstructor(targetElement, url, {
     ...rfbOptions,
-    shared
+    shared,
   });
 
   client.scaleViewport = scaleViewport;
