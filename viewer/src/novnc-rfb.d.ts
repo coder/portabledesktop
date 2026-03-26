@@ -5,8 +5,13 @@ declare module "@novnc/novnc/lib/rfb.js" {
     clean?: boolean;
   }
 
+  export interface RfbClipboardDetail {
+    text: string;
+  }
+
   export interface RfbEventMap {
     connect: Event;
+    clipboard: CustomEvent<RfbClipboardDetail>;
     disconnect: CustomEvent<RfbDisconnectDetail>;
     credentialsrequired: Event;
     securityfailure: Event;
@@ -27,7 +32,11 @@ declare module "@novnc/novnc/lib/rfb.js" {
   }
 
   export default class RFB extends EventTarget {
-    constructor(target: Element, urlOrChannel: UrlOrChannel, options?: RfbOptions);
+    constructor(
+      target: Element,
+      urlOrChannel: UrlOrChannel,
+      options?: RfbOptions,
+    );
     connect(): void;
     disconnect(): void;
     focus(): void;
@@ -46,12 +55,12 @@ declare module "@novnc/novnc/lib/rfb.js" {
     addEventListener<K extends keyof RfbEventMap>(
       type: K,
       listener: (this: RFB, event: RfbEventMap[K]) => void,
-      options?: boolean | AddEventListenerOptions
+      options?: boolean | AddEventListenerOptions,
     ): void;
     addEventListener(
       type: string,
       listener: EventListenerOrEventListenerObject,
-      options?: boolean | AddEventListenerOptions
+      options?: boolean | AddEventListenerOptions,
     ): void;
   }
 }

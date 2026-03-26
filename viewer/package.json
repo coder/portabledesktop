@@ -3,12 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build src/entry.ts --outfile dist/viewer-client.js --target=browser --format=esm"
+    "build": "bun build src/entry.ts --outfile dist/viewer-client.js --target=browser --format=esm",
+    "format": "prettier --write src/**/*.ts"
   },
   "dependencies": {
     "@novnc/novnc": "1.5.0"
   },
   "devDependencies": {
+    "prettier": "^3.8.1",
     "typescript": "^5.8.2"
   }
 }

@@ -60,6 +60,40 @@ type KillOptions struct {
 	Cleanup *bool
 }
 
+func buildXvncArgs(
+	display int,
+	geometry string,
+	depth int,
+	dpi int,
+	port int,
+	acceptResize bool,
+	extraArgs []string,
+) []string {
+	acceptResizeValue := "0"
+	if acceptResize {
+		acceptResizeValue = "1"
+	}
+
+	args := []string{
+		fmt.Sprintf(":%d", display),
+		"-geometry", geometry,
+		"-depth", strconv.Itoa(depth),
+		"-dpi", strconv.Itoa(dpi),
+		"-rfbport", strconv.Itoa(port),
+		"-SecurityTypes", "None",
+		"-ac",
+		"-nolisten", "tcp",
+		"-localhost", "no",
+		fmt.Sprintf("-AcceptSetDesktopSize=%s", acceptResizeValue),
+		// Keep CLIPBOARD copy/paste working, but stop forwarding X11
+		// PRIMARY selection changes to VNC clients. That prevents
+		// plain text selection inside the desktop from appearing as a
+		// clipboard update in the viewer.
+		"-SendPrimary=0",
+	}
+	return append(args, extraArgs...)
+}
+
 // Start creates and starts a new portable desktop session.
 func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 	// 1. Pick display + port.
@@ -110,25 +144,18 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		timeout = 15 * time.Second
 	}
 
-	acceptResize := "0"
-	if desktopSizeMode == "dynamic" {
-		acceptResize = "1"
-	}
+	acceptResize := desktopSizeMode == "dynamic"
 
 	// 3. Build Xvnc argument list.
-	xvncArgs := []string{
-		fmt.Sprintf(":%d", display),
-		"-geometry", geometry,
-		"-depth", strconv.Itoa(depth),
-		"-dpi", strconv.Itoa(dpi),
-		"-rfbport", strconv.Itoa(port),
-		"-SecurityTypes", "None",
-		"-ac",
-		"-nolisten", "tcp",
-		"-localhost", "no",
-		fmt.Sprintf("-AcceptSetDesktopSize=%s", acceptResize),
-	}
-	xvncArgs = append(xvncArgs, opts.XvncArgs...)
+	xvncArgs := buildXvncArgs(
+		display,
+		geometry,
+		depth,
+		dpi,
+		port,
+		acceptResize,
+		opts.XvncArgs,
+	)
 
 	// 4. Spawn Xvnc.
 	xvncBin := runtime.ResolveRuntimeBinary(runtimeDir, "Xvnc")
