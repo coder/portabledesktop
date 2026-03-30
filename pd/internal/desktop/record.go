@@ -116,6 +116,7 @@ func (d *Desktop) StartRecording(opts RecordingOptions) (*RecordingHandle, error
 	cmd.Env = d.Env()
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start ffmpeg recorder: %w", err)
