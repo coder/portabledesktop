@@ -12,7 +12,7 @@ import (
 func TestParseSessionGeometry(t *testing.T) {
 	t.Parallel()
 
-	geometry, err := ParseSessionGeometry("1400x900")
+	geometry, err := ParseSessionGeometry("1400x900", AnthropicScreenshotLimits)
 	if err != nil {
 		t.Fatalf("ParseSessionGeometry returned error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestDeclaredDisplaySizeDerivation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			geometry, err := NewGeometry(tc.nativeWidth, tc.nativeHeight)
+			geometry, err := NewGeometry(tc.nativeWidth, tc.nativeHeight, AnthropicScreenshotLimits)
 			if err != nil {
 				t.Fatalf("NewGeometry returned error: %v", err)
 			}
@@ -69,7 +69,7 @@ func TestDeclaredDisplaySizeDerivation(t *testing.T) {
 func TestDeclaredPointToNative(t *testing.T) {
 	t.Parallel()
 
-	geometry := MustGeometry(1920, 1080)
+	geometry := MustGeometry(1920, 1080, AnthropicScreenshotLimits)
 
 	tests := []struct {
 		name     string
@@ -96,7 +96,7 @@ func TestDeclaredPointToNative(t *testing.T) {
 func TestNativePointToDeclared(t *testing.T) {
 	t.Parallel()
 
-	geometry := MustGeometry(1920, 1080)
+	geometry := MustGeometry(1920, 1080, AnthropicScreenshotLimits)
 
 	tests := []struct {
 		name   string
@@ -123,7 +123,7 @@ func TestNativePointToDeclared(t *testing.T) {
 func TestDeclaredRegionToNative(t *testing.T) {
 	t.Parallel()
 
-	geometry := MustGeometry(1400, 900)
+	geometry := MustGeometry(1400, 900, AnthropicScreenshotLimits)
 	region := geometry.DeclaredRegionToNative([4]int{100, 200, 500, 600})
 	want := image.Rect(105, 210, 524, 629)
 	if region != want {
@@ -171,7 +171,7 @@ func TestClampRegionToBounds(t *testing.T) {
 func TestOffByOneAtMaximumCoordinates(t *testing.T) {
 	t.Parallel()
 
-	geometry := MustGeometry(1400, 900)
+	geometry := MustGeometry(1400, 900, AnthropicScreenshotLimits)
 	declaredMax := image.Pt(geometry.DeclaredWidth-1, geometry.DeclaredHeight-1)
 	nativeMax := image.Pt(geometry.NativeWidth-1, geometry.NativeHeight-1)
 
@@ -220,7 +220,7 @@ func TestParsePNGDimensions(t *testing.T) {
 func TestZoomRegionConversionIsStateless(t *testing.T) {
 	t.Parallel()
 
-	geometry := MustGeometry(1920, 1080)
+	geometry := MustGeometry(1920, 1080, AnthropicScreenshotLimits)
 	zoomRegion := [4]int{714, 402, 1428, 803}
 	want := image.Rect(960, 540, 1918, 1078)
 
@@ -262,7 +262,7 @@ func TestDeclaredToNativeToDeclaredRoundTripExhaustive(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight)
+			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight, AnthropicScreenshotLimits)
 			if geometry.DeclaredWidth != tc.declaredWidth || geometry.DeclaredHeight != tc.declaredHeight {
 				t.Fatalf(
 					"declared geometry = %dx%d, want %dx%d",
@@ -309,7 +309,7 @@ func TestDeclaredRegionToNativeFullScreenBounds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight)
+			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight, AnthropicScreenshotLimits)
 			region := [4]int{0, 0, geometry.DeclaredWidth, geometry.DeclaredHeight}
 			got := geometry.DeclaredRegionToNative(region)
 			want := geometry.NativeBounds()
@@ -354,7 +354,7 @@ func TestDeclaredRegionToNativeReversedMatchesForward(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight)
+			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight, AnthropicScreenshotLimits)
 			forward := geometry.DeclaredRegionToNative(tc.forward)
 			reversed := geometry.DeclaredRegionToNative(tc.reversed)
 			if forward != reversed {
@@ -426,7 +426,7 @@ func TestDeclaredRegionToNativeSinglePixelAndThinRegions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight)
+			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight, AnthropicScreenshotLimits)
 			got := geometry.DeclaredRegionToNative(tc.region)
 			if got != tc.want {
 				t.Fatalf("DeclaredRegionToNative(%v) = %v, want %v", tc.region, got, tc.want)
@@ -494,7 +494,7 @@ func TestDeclaredRegionToNativeClampsOutOfBounds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight)
+			geometry := MustGeometry(tc.nativeWidth, tc.nativeHeight, AnthropicScreenshotLimits)
 			got := geometry.DeclaredRegionToNative(tc.region)
 			if got != tc.want {
 				t.Fatalf("DeclaredRegionToNative(%v) = %v, want %v", tc.region, got, tc.want)

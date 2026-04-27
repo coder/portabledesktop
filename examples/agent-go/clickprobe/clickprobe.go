@@ -424,6 +424,7 @@ func StartMode(
 	ctx context.Context,
 	sessionDir string,
 	geometry *display.Geometry,
+	limits display.ScreenshotLimits,
 	pdExecFn func(...string) (string, error),
 ) (*Runtime, error) {
 	fmt.Println("starting clickprobe...")
@@ -440,7 +441,7 @@ func StartMode(
 	}
 	probe.Ready = &ready
 
-	resolvedGeometry, err := display.NewGeometry(ready.ScreenWidth, ready.ScreenHeight)
+	resolvedGeometry, err := display.NewGeometry(ready.ScreenWidth, ready.ScreenHeight, limits)
 	if err != nil {
 		return nil, fmt.Errorf("resolve ready geometry: %w", err)
 	}

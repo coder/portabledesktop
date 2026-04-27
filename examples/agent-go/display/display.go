@@ -14,14 +14,38 @@ import (
 	"strings"
 )
 
-const (
-	// Anthropic recommended screenshot limits.
-	MaxScreenshotLongEdge = 1568
-	MaxScreenshotPixels   = 1_150_000
+// ScreenshotLimits caps the dimensions we report as the declared
+// display size and the dimensions we actually capture. A zero field
+// means "no limit on this axis". Different providers have different
+// guidance, so callers pick the limit set that matches the provider
+// they are about to talk to.
+type ScreenshotLimits struct {
+	// MaxLongEdge caps the longer of width and height in pixels. Zero
+	// means uncapped.
+	MaxLongEdge int
+	// MaxPixels caps total pixels (width * height). Zero means uncapped.
+	MaxPixels int
+}
+
+var (
+	// AnthropicScreenshotLimits matches Anthropic's published guidance
+	// for computer use screenshots: long edge <= 1568 pixels and total
+	// pixels <= 1.15M.
+	AnthropicScreenshotLimits = ScreenshotLimits{
+		MaxLongEdge: 1568,
+		MaxPixels:   1_150_000,
+	}
+
+	// OpenAIScreenshotLimits applies no downscaling. The OpenAI
+	// computer use API recommends sending screenshots at the same
+	// resolution as the configured display, and the model accepts
+	// considerably larger images than Anthropic's cap. We rely on the
+	// caller's chosen native resolution to bound size instead.
+	OpenAIScreenshotLimits = ScreenshotLimits{}
 )
 
 // Geometry holds native (actual VNC framebuffer) and declared
-// (what we tell Anthropic) display dimensions.
+// (what we send to the model) display dimensions.
 type Geometry struct {
 	NativeWidth    int
 	NativeHeight   int
@@ -30,14 +54,22 @@ type Geometry struct {
 }
 
 // ComputeScaledSize returns the target dimensions for a screenshot,
-// respecting Anthropic's recommended limits.
-func ComputeScaledSize(w, h int) (int, int) {
-	longEdge := float64(max(w, h))
-	totalPx := float64(w * h)
-
-	longEdgeScale := float64(MaxScreenshotLongEdge) / longEdge
-	totalScale := math.Sqrt(float64(MaxScreenshotPixels) / totalPx)
-	scale := math.Min(1, math.Min(longEdgeScale, totalScale))
+// scaled down to respect the provided limits. Zero-valued limit
+// fields disable that axis of scaling.
+func ComputeScaledSize(w, h int, limits ScreenshotLimits) (int, int) {
+	scale := 1.0
+	if limits.MaxLongEdge > 0 {
+		longEdge := float64(max(w, h))
+		if longEdge > 0 {
+			scale = math.Min(scale, float64(limits.MaxLongEdge)/longEdge)
+		}
+	}
+	if limits.MaxPixels > 0 {
+		totalPx := float64(w * h)
+		if totalPx > 0 {
+			scale = math.Min(scale, math.Sqrt(float64(limits.MaxPixels)/totalPx))
+		}
+	}
 
 	if scale >= 1 {
 		return w, h
@@ -47,8 +79,8 @@ func ComputeScaledSize(w, h int) (int, int) {
 }
 
 // MustGeometry is like NewGeometry but panics on error.
-func MustGeometry(nativeWidth, nativeHeight int) Geometry {
-	geometry, err := NewGeometry(nativeWidth, nativeHeight)
+func MustGeometry(nativeWidth, nativeHeight int, limits ScreenshotLimits) Geometry {
+	geometry, err := NewGeometry(nativeWidth, nativeHeight, limits)
 	if err != nil {
 		panic(err)
 	}
@@ -56,8 +88,9 @@ func MustGeometry(nativeWidth, nativeHeight int) Geometry {
 }
 
 // NewGeometry creates a Geometry from native dimensions, computing
-// the declared (scaled) dimensions automatically.
-func NewGeometry(nativeWidth, nativeHeight int) (Geometry, error) {
+// the declared (scaled) dimensions automatically using the provided
+// screenshot limits.
+func NewGeometry(nativeWidth, nativeHeight int, limits ScreenshotLimits) (Geometry, error) {
 	if nativeWidth <= 0 || nativeHeight <= 0 {
 		return Geometry{}, fmt.Errorf(
 			"native desktop geometry must be positive, got %dx%d",
@@ -66,7 +99,7 @@ func NewGeometry(nativeWidth, nativeHeight int) (Geometry, error) {
 		)
 	}
 
-	declaredWidth, declaredHeight := ComputeScaledSize(nativeWidth, nativeHeight)
+	declaredWidth, declaredHeight := ComputeScaledSize(nativeWidth, nativeHeight, limits)
 	return Geometry{
 		NativeWidth:    nativeWidth,
 		NativeHeight:   nativeHeight,
@@ -76,13 +109,13 @@ func NewGeometry(nativeWidth, nativeHeight int) (Geometry, error) {
 }
 
 // ParseSessionGeometry parses a "WIDTHxHEIGHT" string and returns
-// the corresponding Geometry.
-func ParseSessionGeometry(raw string) (Geometry, error) {
+// the corresponding Geometry, applying the given screenshot limits.
+func ParseSessionGeometry(raw string, limits ScreenshotLimits) (Geometry, error) {
 	nativeWidth, nativeHeight, err := ParseGeometryString(raw)
 	if err != nil {
 		return Geometry{}, fmt.Errorf("parse session geometry %q: %w", raw, err)
 	}
-	return NewGeometry(nativeWidth, nativeHeight)
+	return NewGeometry(nativeWidth, nativeHeight, limits)
 }
 
 // ParseGeometryString parses a "WIDTHxHEIGHT" string into width and
