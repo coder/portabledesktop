@@ -101,10 +101,12 @@ func SetupPlankConfig(sessionDir string, apps []DesktopApp) (plankConfig, error)
 // StartDock starts the packaged Plank dock using the session-local config and
 // patched gdk-pixbuf cache.
 func StartDock(runtimeDir string, display int, sessionDir string, detached bool) (int, error) {
-	apps, err := FindApplications()
+	hostApps, err := FindApplications()
 	if err != nil {
 		return 0, fmt.Errorf("find applications: %w", err)
 	}
+
+	apps := dockAppsForSession(runtimeDir, sessionDir, hostApps)
 
 	config, err := SetupPlankConfig(sessionDir, apps)
 	if err != nil {
@@ -204,6 +206,55 @@ func appendDockLog(sessionDir, format string, args ...any) error {
 	return err
 }
 
+// runtimeTerminalDesktopID is the DesktopID we use for the bundled
+// xterm launcher in the dock. It must match the basename of the
+// `xterm.desktop` file shipped under `<runtime>/share/applications`
+// so that any host-discovered `xterm.desktop` deduplicates against it.
+const runtimeTerminalDesktopID = "xterm.desktop"
+
+// dockAppsForSession returns the launcher list to seed the dock with.
+// The bundled runtime terminal is always first so users can open a
+// shell without depending on host-installed apps. Any host-discovered
+// applications follow, with duplicates of the runtime terminal
+// (matched by DesktopID) filtered out.
+func dockAppsForSession(runtimeDir, sessionDir string, hostApps []DesktopApp) []DesktopApp {
+	_ = sessionDir // reserved for future per-session launchers.
+
+	terminal := runtimeTerminalApp(runtimeDir)
+	apps := make([]DesktopApp, 0, len(hostApps)+1)
+	if terminal != nil {
+		apps = append(apps, *terminal)
+	}
+	for _, app := range hostApps {
+		if terminal != nil && strings.EqualFold(app.DesktopID, terminal.DesktopID) {
+			continue
+		}
+		apps = append(apps, app)
+	}
+	return apps
+}
+
+// runtimeTerminalApp returns a synthetic DesktopApp pointing at the
+// xterm.desktop file shipped inside the runtime payload, or nil if
+// the runtime does not include one (older runtimes or stripped test
+// fixtures). The returned DesktopFile path is suitable for use as a
+// Plank launcher target.
+func runtimeTerminalApp(runtimeDir string) *DesktopApp {
+	if runtimeDir == "" {
+		return nil
+	}
+	path := filepath.Join(runtimeDir, "share", "applications", runtimeTerminalDesktopID)
+	if _, err := os.Stat(path); err != nil {
+		return nil
+	}
+	return &DesktopApp{
+		DesktopID:   runtimeTerminalDesktopID,
+		DesktopFile: path,
+		Name:        "Terminal",
+		Exec:        "xterm",
+		Type:        "Application",
+	}
+}
 func dockLaunchersForApps(apps []DesktopApp) []dockLauncherSpec {
 	launchers := make([]dockLauncherSpec, 0, len(apps))
 	for _, app := range apps {

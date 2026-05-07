@@ -211,10 +211,27 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		}
 		defer openboxLog.Close()
 
+		// Generate a session-local openbox config that strips the
+		// desktop right-click `ShowMenu` mousebind. The runtime ships
+		// a system rc.xml that opens a host-targeted application menu;
+		// inside portabledesktop those launchers point at binaries
+		// that don't exist, so we suppress the menu entirely.
+		openboxConfigHome, err := SetupOpenboxConfig(runtimeDir, sessionDir)
+		if err != nil {
+			return nil, fmt.Errorf("setup openbox config: %w", err)
+		}
+
+		var openboxExtraEnv map[string]string
+		if openboxConfigHome != "" {
+			openboxExtraEnv = map[string]string{
+				"XDG_CONFIG_HOME": openboxConfigHome,
+			}
+		}
+
 		openboxCmd := exec.Command(openboxBin)
 		openboxCmd.Stdout = openboxLog
 		openboxCmd.Stderr = openboxLog
-		openboxCmd.Env = BuildEnv(runtimeDir, display, nil)
+		openboxCmd.Env = BuildEnv(runtimeDir, display, openboxExtraEnv)
 		if opts.Detached {
 			openboxCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		}
@@ -251,20 +268,18 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		DockPid:           dockPid,
 	}
 
-	// 7. Background: use caller's choice, or default to the
-	// runtime wallpaper image, or fall back to a solid color.
+	// 7. Background: use the caller's choice, or default to a
+	// black backdrop with the bundled Coder logo centered on it.
+	// If the runtime does not ship a logo asset (older runtimes,
+	// or stripped test fixtures), fall back to plain black.
 	if opts.Background == nil {
-		wallpaper := runtime.ResolveRuntimeData(runtimeDir, "portabledesktop/wallpaper.jpg")
-		if wallpaper != "" {
-			opts.Background = &BackgroundOptions{
-				ImagePath: wallpaper,
-				Mode:      "fill",
-			}
-		} else {
-			opts.Background = &BackgroundOptions{
-				Color: "#1e1e2e",
-			}
+		bg := BackgroundOptions{Color: "#000000"}
+		logo := runtime.ResolveRuntimeData(runtimeDir, "portabledesktop/coder-logo.png")
+		if logo != "" {
+			bg.ImagePath = logo
+			bg.Mode = "center"
 		}
+		opts.Background = &bg
 	}
 	if err := d.SetBackground(*opts.Background); err != nil {
 		return nil, fmt.Errorf("set background: %w", err)

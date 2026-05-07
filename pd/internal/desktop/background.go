@@ -12,13 +12,19 @@ type BackgroundOptions struct {
 }
 
 // SetBackground sets the desktop background using xsetroot (for
-// solid colours) or xwallpaper (for images).
+// solid colours) and/or xwallpaper (for images). When both Color
+// and ImagePath are set, the colour is painted first as a solid
+// fill and the image is then composited on top. This lets a small
+// transparent or centered image (such as a logo) sit on a uniform
+// coloured background without leaving uncovered root-window pixels.
 func (d *Desktop) SetBackground(opts BackgroundOptions) error {
+	if opts.Color != "" {
+		if err := d.setBackgroundColor(opts.Color); err != nil {
+			return err
+		}
+	}
 	if opts.ImagePath != "" {
 		return d.setBackgroundImage(opts.ImagePath, opts.Mode)
-	}
-	if opts.Color != "" {
-		return d.setBackgroundColor(opts.Color)
 	}
 	return nil
 }

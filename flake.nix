@@ -288,6 +288,19 @@
             includeInStatic = false;
           }
           {
+            # xterm is the bundled fallback terminal exposed in the
+            # dock so users can open a shell without depending on
+            # host-installed apps. It is X11-native, has no GTK or
+            # D-Bus dependencies, and adds only ~3-4 MB compressed.
+            name = "xterm";
+            attrPaths = [
+              [ "xterm" ]
+              [ "xorg" "xterm" ]
+            ];
+            requiredStatic = false;
+            includeInStatic = false;
+          }
+          {
             name = "ffmpeg";
             package = runtimeFfmpegRecorder;
             requiredStatic = false;
@@ -926,6 +939,57 @@
                 exec "$tool_real" "$@"
               '';
             };
+            xtermWrapperScript = pkgs.writeTextFile {
+              name = "portabledesktop-runtime-xterm-wrapper";
+              executable = true;
+              text = ''
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                script_dir="$(cd "$(dirname "''${BASH_SOURCE[0]}")" && pwd)"
+                runtime_root="$(cd "$script_dir/.." && pwd)"
+                runtime_library_path="$runtime_root/lib:$runtime_root/lib64:$runtime_root/usr/lib:$runtime_root/usr/lib64"
+                xterm_real="$script_dir/xterm.real"
+
+                if [ ! -x "$xterm_real" ]; then
+                  echo "error: missing xterm payload binary: $xterm_real" >&2
+                  exit 1
+                fi
+
+                # xterm reads its appearance defaults (fonts, colours,
+                # cursor) from the X resource file located by
+                # XAPPLRESDIR. Point it at our bundled copy so users
+                # see the same readable defaults nixpkgs ships,
+                # regardless of host /usr state.
+                if [ -d "$runtime_root/lib/X11/app-defaults" ]; then
+                  export XAPPLRESDIR="$runtime_root/lib/X11/app-defaults/"
+                fi
+
+                loader_path=""
+                for candidate in \
+                  "$runtime_root/lib64/ld-linux-x86-64.so.2" \
+                  "$runtime_root/lib/ld-linux-x86-64.so.2" \
+                  "$runtime_root/lib/ld-linux-aarch64.so.1" \
+                  "$runtime_root/lib64/ld-linux-aarch64.so.1"; do
+                  if [ -f "$candidate" ]; then
+                    loader_path="$candidate"
+                    break
+                  fi
+                done
+
+                if [ -n "$loader_path" ]; then
+                  exec "$loader_path" --library-path "$runtime_library_path" "$xterm_real" "$@"
+                fi
+
+                if [ -n "''${LD_LIBRARY_PATH:-}" ]; then
+                  export LD_LIBRARY_PATH="$runtime_library_path:''${LD_LIBRARY_PATH}"
+                else
+                  export LD_LIBRARY_PATH="$runtime_library_path"
+                fi
+
+                exec "$xterm_real" "$@"
+              '';
+            };
           in
           pkgs.stdenvNoCC.mkDerivation {
             pname = "portabledesktop-runtime-tarball-${profileName}";
@@ -1074,6 +1138,8 @@
                   ! -name 'ffmpeg' \
                   ! -name '.openbox-wrapped' \
                   ! -name '.plank-wrapped' \
+                  ! -name 'xterm' \
+                  ! -name '.xterm-wrapped' \
                   -delete
               fi
 
@@ -1110,6 +1176,30 @@
 
               mkdir -p "$runtimePayloadRoot/share/portabledesktop"
               cp "${./assets/wallpaper.jpg}" "$runtimePayloadRoot/share/portabledesktop/wallpaper.jpg"
+              cp "${./assets/coder-logo.png}" "$runtimePayloadRoot/share/portabledesktop/coder-logo.png"
+
+              # Bundle a launcher entry for the runtime xterm so the
+              # dock has a working terminal even on hosts that ship
+              # no desktop applications. Plank reads this file via
+              # the path written into the .dockitem launcher; the
+              # runtime wrapper script in bin/xterm prepends the
+              # runtime's library path before exec'ing the real
+              # binary.
+              mkdir -p "$runtimePayloadRoot/share/applications"
+              cat > "$runtimePayloadRoot/share/applications/xterm.desktop" <<'EOF'
+              [Desktop Entry]
+              Version=1.0
+              Name=Terminal
+              GenericName=Terminal
+              Comment=Run a shell inside the desktop session.
+              Exec=xterm
+              TryExec=xterm
+              Icon=utilities-terminal
+              Type=Application
+              Categories=System;TerminalEmulator;
+              Terminal=false
+              StartupNotify=false
+              EOF
 
               if [ -f "$runtimePayloadRoot/etc/fonts/fonts.conf" ]; then
                 # Replace build-time /nix/store font dirs with the bundled runtime font dir.
@@ -1217,6 +1307,7 @@
               if [ -d "$runtimePayloadRoot/share/applications" ]; then
                 find "$runtimePayloadRoot/share/applications" -mindepth 1 -maxdepth 1 \
                   ! -name 'net.launchpad.plank.desktop' \
+                  ! -name 'xterm.desktop' \
                   -delete
               fi
 
@@ -1312,6 +1403,12 @@
               queue_runtime_dep "$runtimePayloadRoot/bin/xsetroot"
               queue_runtime_dep "$runtimePayloadRoot/bin/xwallpaper"
               queue_runtime_dep "$runtimePayloadRoot/bin/xdotool"
+              queue_runtime_dep "$runtimePayloadRoot/bin/xterm"
+              # The .xterm-wrapped file is the actual ELF shipped by
+              # nixpkgs; bin/xterm is a bash wrapper at this point in
+              # the build. Queue both so the dep walker captures the
+              # ELF's NEEDED libraries instead of skipping the script.
+              queue_runtime_dep "$runtimePayloadRoot/bin/.xterm-wrapped"
               queue_runtime_dep "$runtimePayloadRoot/bin/ffmpeg"
               queue_runtime_dep "$runtimePayloadRoot/bin/.openbox-wrapped"
 
@@ -1517,6 +1614,45 @@
                 fi
               done
 
+              # Replace the nixpkgs xterm bash wrapper, which hard-codes
+              # /nix/store paths, with a portable wrapper that exports
+              # XAPPLRESDIR from the runtime payload and exec's via the
+              # bundled loader. The real ELF lands at bin/xterm.real.
+              if [ -e "$runtimePayloadRoot/bin/xterm.real" ]; then
+                echo "error: runtime payload unexpectedly already contains bin/xterm.real" >&2
+                exit 1
+              fi
+
+              xterm_real_source=""
+              if [ -x "$runtimePayloadRoot/bin/.xterm-wrapped" ]; then
+                xterm_real_source="$runtimePayloadRoot/bin/.xterm-wrapped"
+              elif [ -x "$runtimePayloadRoot/bin/xterm" ]; then
+                xterm_real_source="$runtimePayloadRoot/bin/xterm"
+              fi
+
+              if [ -n "$xterm_real_source" ]; then
+                mv "$xterm_real_source" "$runtimePayloadRoot/bin/xterm.real"
+                rm -f "$runtimePayloadRoot/bin/xterm" "$runtimePayloadRoot/bin/.xterm-wrapped"
+                cp "${xtermWrapperScript}" "$runtimePayloadRoot/bin/xterm"
+                chmod 0755 "$runtimePayloadRoot/bin/xterm"
+              fi
+
+              # Bundle xterm's X resource defaults so the wrapper's
+              # XAPPLRESDIR points at a working app-defaults dir even
+              # after the X11/app-defaults wipe earlier in the install
+              # phase.
+              xterm_app_defaults_src="${pkgs.xterm}/lib/X11/app-defaults"
+              if [ -d "$xterm_app_defaults_src" ]; then
+                mkdir -p "$runtimePayloadRoot/lib/X11/app-defaults"
+                cp -a "$xterm_app_defaults_src/." "$runtimePayloadRoot/lib/X11/app-defaults/"
+                # The Nix store entries are read-only (0444 files, 0555
+                # dirs). The runtime extractor writes files into the
+                # parent directory before fixing its mode, which fails
+                # with EACCES on a read-only dir. Make everything
+                # writable inside the runtime payload so extraction
+                # succeeds on the user's host.
+                chmod -R u+w "$runtimePayloadRoot/lib/X11/app-defaults"
+              fi
               librsvg_cache_src="${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
               runtime_pixbuf_dir="$runtimePayloadRoot/lib/gdk-pixbuf-2.0/2.10.0"
               runtime_pixbuf_loaders_dir="$runtime_pixbuf_dir/loaders"

@@ -34,10 +34,28 @@
         "type": "github"
       }
     },
+    "plank-reloaded": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1772649663,
+        "narHash": "sha256-9n39dk3f+h94qJt/PCNRi/NsakTD0QOoNmoo/wJgj0k=",
+        "owner": "zquestz",
+        "repo": "plank-reloaded",
+        "rev": "c35f5105ca37bcf657aee9828b0e93a5cf2f9628",
+        "type": "github"
+      },
+      "original": {
+        "owner": "zquestz",
+        "repo": "plank-reloaded",
+        "rev": "c35f5105ca37bcf657aee9828b0e93a5cf2f9628",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "plank-reloaded": "plank-reloaded"
       }
     },
     "systems": {

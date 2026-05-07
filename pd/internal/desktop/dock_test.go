@@ -187,3 +187,66 @@ func writeLauncherDesktopFile(t *testing.T, path string) {
 		t.Fatalf("write launcher %q: %v", path, err)
 	}
 }
+
+func TestDockAppsForSessionPrependsRuntimeTerminal(t *testing.T) {
+	t.Parallel()
+
+	runtimeDir := t.TempDir()
+	runtimeAppsDir := filepath.Join(runtimeDir, "share", "applications")
+	if err := os.MkdirAll(runtimeAppsDir, 0o755); err != nil {
+		t.Fatalf("mkdir runtime apps dir: %v", err)
+	}
+	runtimeXterm := filepath.Join(runtimeAppsDir, "xterm.desktop")
+	writeLauncherDesktopFile(t, runtimeXterm)
+
+	hostAppsDir := t.TempDir()
+	hostFirefox := filepath.Join(hostAppsDir, "firefox.desktop")
+	hostXterm := filepath.Join(hostAppsDir, "xterm.desktop")
+	writeLauncherDesktopFile(t, hostFirefox)
+	writeLauncherDesktopFile(t, hostXterm)
+
+	hostApps := []DesktopApp{
+		{DesktopID: "firefox.desktop", DesktopFile: hostFirefox},
+		{DesktopID: "xterm.desktop", DesktopFile: hostXterm},
+	}
+
+	got := dockAppsForSession(runtimeDir, t.TempDir(), hostApps)
+	if len(got) != 2 {
+		t.Fatalf("dockAppsForSession() len = %d, want 2 (runtime xterm + firefox); got = %#v", len(got), got)
+	}
+	if got[0].DesktopID != "xterm.desktop" || got[0].DesktopFile != runtimeXterm {
+		t.Fatalf("first app = %#v, want runtime xterm at %q", got[0], runtimeXterm)
+	}
+	if got[1].DesktopID != "firefox.desktop" || got[1].DesktopFile != hostFirefox {
+		t.Fatalf("second app = %#v, want host firefox at %q", got[1], hostFirefox)
+	}
+}
+
+func TestDockAppsForSessionWithoutRuntimeTerminalKeepsHostApps(t *testing.T) {
+	t.Parallel()
+
+	// runtimeDir lacks share/applications/xterm.desktop.
+	runtimeDir := t.TempDir()
+	hostAppsDir := t.TempDir()
+	hostFirefox := filepath.Join(hostAppsDir, "firefox.desktop")
+	hostXterm := filepath.Join(hostAppsDir, "xterm.desktop")
+	writeLauncherDesktopFile(t, hostFirefox)
+	writeLauncherDesktopFile(t, hostXterm)
+
+	hostApps := []DesktopApp{
+		{DesktopID: "firefox.desktop", DesktopFile: hostFirefox},
+		{DesktopID: "xterm.desktop", DesktopFile: hostXterm},
+	}
+
+	got := dockAppsForSession(runtimeDir, t.TempDir(), hostApps)
+	if len(got) != 2 {
+		t.Fatalf("dockAppsForSession() len = %d, want 2 host apps when runtime has no terminal; got = %#v", len(got), got)
+	}
+	if got[0].DesktopID != "firefox.desktop" {
+		t.Fatalf("first app = %#v, want host firefox", got[0])
+	}
+	if got[1].DesktopID != "xterm.desktop" || got[1].DesktopFile != hostXterm {
+		t.Fatalf("second app = %#v, want host xterm at %q", got[1], hostXterm)
+	}
+}
+
