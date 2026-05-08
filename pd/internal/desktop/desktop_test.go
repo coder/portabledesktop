@@ -20,7 +20,7 @@ func TestBuildXvncArgs_DisablesSendPrimaryByDefault(t *testing.T) {
 		"-nolisten", "tcp",
 		"-localhost", "no",
 		"-AcceptSetDesktopSize=1",
-		"-SendPrimary=0",
+		"-SendPrimary=1", // TEMPORARY: see desktop.go.
 		"-foo",
 	}
 

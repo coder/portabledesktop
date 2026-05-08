@@ -85,11 +85,12 @@ func buildXvncArgs(
 		"-nolisten", "tcp",
 		"-localhost", "no",
 		fmt.Sprintf("-AcceptSetDesktopSize=%s", acceptResizeValue),
-		// Keep CLIPBOARD copy/paste working, but stop forwarding X11
-		// PRIMARY selection changes to VNC clients. That prevents
-		// plain text selection inside the desktop from appearing as a
-		// clipboard update in the viewer.
-		"-SendPrimary=0",
+		// TEMPORARY: forward X11 PRIMARY selection changes as VNC
+		// CutText messages so DLP clipboard interception can be
+		// exercised by mouse-selecting text in the inner desktop
+		// (no Ctrl-C / browser clipboard required). Revert to
+		// -SendPrimary=0 before merging.
+		"-SendPrimary=1",
 	}
 	return append(args, extraArgs...)
 }
