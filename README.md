@@ -67,6 +67,14 @@ a private network, VPN, or SSH tunnel.
 | `PORTABLEDESKTOP_RUNTIME_DIR` | Skip unpack, use this runtime dir |
 | `PORTABLEDESKTOP_STATE_FILE`  | Override default state file path  |
 
+## Minimal runtime module (experimental)
+
+[`runtime/`](runtime/) is a separate Go module,
+`github.com/coder/portabledesktop/runtime`, that embeds only a fully static
+`Xvnc` plus keymap data (about 1.7 MiB per architecture) for programs that want
+to ship an X server inside their own binary. See its
+[README](runtime/README.md).
+
 ## Development
 
 See [`pd/README.md`](pd/README.md) for build instructions, Makefile targets,
