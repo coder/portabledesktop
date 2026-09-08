@@ -67,12 +67,16 @@ a private network, VPN, or SSH tunnel.
 | `PORTABLEDESKTOP_RUNTIME_DIR` | Skip unpack, use this runtime dir |
 | `PORTABLEDESKTOP_STATE_FILE`  | Override default state file path  |
 
-## Minimal runtime module (experimental)
+## Slim build (experimental)
 
-[`runtime/`](runtime/) is a separate Go module,
-`github.com/coder/portabledesktop/runtime`, that embeds only a fully static
-`Xvnc` plus keymap data (about 1.7 MiB per architecture) for programs that want
-to ship an X server inside their own binary. See its
+`portabledesktop-slim-linux-<arch>` (about 13 MB) embeds only a fully static
+`Xvnc` plus keymap data from [`runtime/`](runtime/) instead of the full Linux
+runtime. It supports `up`, `down`, `info`, `open`, `run` and `viewer`; there is
+no window manager, dock or wallpaper, and `mouse`, `keyboard`, `screenshot` and
+`record` report that `xdotool` or `ffmpeg` is unavailable unless the host
+provides them. Build it locally with `make build-slim` (no Nix or Docker
+required). The same runtime is also published as the Go module
+`github.com/coder/portabledesktop/runtime`; see its
 [README](runtime/README.md).
 
 ## Development

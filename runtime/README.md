@@ -17,6 +17,15 @@ protocol) and connect a VNC client such as noVNC to it.
 | `linux/amd64` | 1.71 MiB   | 4.5 MiB  |
 | `linux/arm64` | 1.66 MiB   | 4.5 MiB  |
 
+## Slim portabledesktop binary
+
+The same archive is embedded into `portabledesktop-slim-linux-<arch>` by
+`make build-slim` (current architecture) or `make build-slim-linux-{amd64,arm64}`
+at the repository root. That build needs only Go, Bun for the viewer bundle,
+and the committed archives: no Nix and no Docker. The slim binary is about
+13 MB versus 54 MB for the full one, and is what the Coder workspace agent
+embeds. Behavioral differences are listed in the top-level README.
+
 ## Using the module
 
 ```go
@@ -81,7 +90,7 @@ works as well as a local one; the builder does need outbound network access to
 fetch the pinned sources.
 
 | Selection | Behavior |
-|---|---|
+| --- | --- |
 | `--builder <name>` | Passed straight through to the build command |
 | `BUILDX_BUILDER` in the environment | Left alone for buildx to pick up |
 | Neither | Uses the current builder, and only falls back to creating a local `portabledesktop-runtime` docker-container builder when that builder cannot export `type=local` |
@@ -107,7 +116,7 @@ the whole Alpine toolchain runs emulated, which costs roughly 11x.
 No cache, on a 128 core host:
 
 | Target | Buildkit step time | Wall clock | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `linux/amd64` | 57 s | 63 to 74 s | native |
 | `linux/arm64` | 665 s (11.1 min) | 685 s (11.4 min) | QEMU, 11.6x slower |
 
@@ -137,7 +146,7 @@ The tree is unpacked to an arbitrary directory, so `Xvnc` must not need any
 build-time absolute path at run time. Three configure options guarantee that:
 
 | Path | Configure option | Runtime behavior |
-|---|---|---|
+| --- | --- | --- |
 | xkbcomp | `--with-xkb-bin-directory=` (empty) | The server runs plain `xkbcomp`, resolved through `PATH` |
 | XKB data | `--with-xkb-path=/usr/share/X11/xkb` | Compiled in, but always overridden with `-xkbdir` |
 | Fonts | `--with-default-font-path=built-ins` | The libXfont2 built-in fonts live inside the binary, so no font directory has to exist |

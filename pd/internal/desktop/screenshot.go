@@ -41,6 +41,9 @@ func (d *Desktop) Screenshot(opts ScreenshotOptions) ([]byte, error) {
 		return nil, fmt.Errorf("target height must be positive, got %d", *opts.TargetHeight)
 	}
 
+	if !runtime.HasBinary(d.RuntimeDir, "ffmpeg") {
+		return nil, &runtime.ErrToolUnavailable{Tool: "ffmpeg"}
+	}
 	ffmpegBin := runtime.ResolveRuntimeBinary(d.RuntimeDir, "ffmpeg")
 
 	args := []string{
@@ -120,4 +123,3 @@ func (d *Desktop) Screenshot(opts ScreenshotOptions) ([]byte, error) {
 
 	return stdout.Bytes(), nil
 }
-

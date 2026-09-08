@@ -30,6 +30,10 @@ jobs:
       - name: Go test
         run: make test
 
+      # Needs only the committed runtime archives, no Nix or Docker.
+      - name: Build slim binary
+        run: make build-slim-linux-amd64
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
