@@ -67,6 +67,18 @@ a private network, VPN, or SSH tunnel.
 | `PORTABLEDESKTOP_RUNTIME_DIR` | Skip unpack, use this runtime dir |
 | `PORTABLEDESKTOP_STATE_FILE`  | Override default state file path  |
 
+## Slim build (experimental)
+
+`portabledesktop-slim-linux-<arch>` (about 13 MB) embeds only a fully static
+`Xvnc` plus keymap data from [`runtime/`](runtime/) instead of the full Linux
+runtime. It supports `up`, `down`, `info`, `open`, `run` and `viewer`; there is
+no window manager, dock or wallpaper, and `mouse`, `keyboard`, `screenshot` and
+`record` report that `xdotool` or `ffmpeg` is unavailable unless the host
+provides them. Build it locally with `make build-slim` (no Nix or Docker
+required). The same runtime is also published as the Go module
+`github.com/coder/portabledesktop/runtime`; see its
+[README](runtime/README.md).
+
 ## Development
 
 See [`pd/README.md`](pd/README.md) for build instructions, Makefile targets,

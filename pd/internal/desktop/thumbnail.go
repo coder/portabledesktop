@@ -40,6 +40,9 @@ func (d *Desktop) Thumbnail(opts ThumbnailOptions) ([]byte, error) {
 		return nil, fmt.Errorf("height must be positive, got %d", *opts.Height)
 	}
 
+	if !runtime.HasBinary(d.RuntimeDir, "ffmpeg") {
+		return nil, &runtime.ErrToolUnavailable{Tool: "ffmpeg"}
+	}
 	ffmpegBin := runtime.ResolveRuntimeBinary(d.RuntimeDir, "ffmpeg")
 
 	args := []string{

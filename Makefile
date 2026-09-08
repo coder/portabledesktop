@@ -1,4 +1,4 @@
-.PHONY: runtime viewer embed build build-dev build-linux-amd64 build-linux-arm64 test vet clean
+.PHONY: runtime viewer embed build build-dev build-linux-amd64 build-linux-arm64 test vet clean runtime-module runtime-module-check build-slim build-slim-linux-amd64 build-slim-linux-arm64
 
 # Build the Nix runtime tarball (already at repo root).
 runtime:
@@ -30,6 +30,23 @@ build-linux-amd64: embed
 build-linux-arm64: embed
 	cd pd && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags embed_runtime -o dist/portabledesktop-linux-arm64 ./cmd/portabledesktop
 
+# Slim builds embed the minimal static runtime from runtime/ (Xvnc, xkbcomp
+# and keymaps, about 1.7 MiB) instead of the full Nix runtime. They support
+# up, down, info, open, run and viewer; mouse, keyboard, screenshot and record
+# report that xdotool or ffmpeg is unavailable unless the host provides them.
+# The archives are committed, so no Docker or Nix is needed to build these.
+build-slim: viewer
+	cp "runtime/desktop-runtime-linux-$$(go env GOARCH).tar.zst" pd/cmd/portabledesktop/runtime.tar.zst
+	cd pd && CGO_ENABLED=0 go build -tags embed_runtime -o dist/portabledesktop-slim ./cmd/portabledesktop
+
+build-slim-linux-amd64: viewer
+	cp runtime/desktop-runtime-linux-amd64.tar.zst pd/cmd/portabledesktop/runtime.tar.zst
+	cd pd && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags embed_runtime -o dist/portabledesktop-slim-linux-amd64 ./cmd/portabledesktop
+
+build-slim-linux-arm64: viewer
+	cp runtime/desktop-runtime-linux-arm64.tar.zst pd/cmd/portabledesktop/runtime.tar.zst
+	cd pd && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags embed_runtime -o dist/portabledesktop-slim-linux-arm64 ./cmd/portabledesktop
+
 # All tests (unit + integration + e2e). Requires runtime available.
 test:
 	cd pd && go test -race -count=1 -timeout=180s ./...
@@ -43,3 +60,29 @@ clean:
 	rm -rf pd/dist/
 	rm -f pd/cmd/portabledesktop/runtime.tar.zst
 	rm -f pd/internal/viewer/viewer-client.js
+
+# Minimal runtime Go module (runtime/): a static Xvnc built with Docker and
+# committed into the module so Go programs can embed it via go.mod. The build
+# is byte reproducible, so runtime-module-check can verify the committed
+# archives match the Dockerfile.
+RUNTIME_MODULE_ARCHES := amd64 arm64
+
+runtime-module:
+	for arch in $(RUNTIME_MODULE_ARCHES); do \
+		./runtime/build/build.sh --arch "$$arch" --output "runtime/desktop-runtime-linux-$$arch.tar.zst"; \
+		./runtime/build/check_size.sh "runtime/desktop-runtime-linux-$$arch.tar.zst"; \
+	done
+
+# Rebuild the archive for the current architecture and fail if it differs
+# from the committed one. Used by CI.
+runtime-module-check:
+	arch="$$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')"; \
+	tmp="$$(mktemp --suffix=.tar.zst)"; \
+	./runtime/build/build.sh --arch "$$arch" --output "$$tmp"; \
+	./runtime/build/check_size.sh "$$tmp"; \
+	if ! cmp -s "$$tmp" "runtime/desktop-runtime-linux-$$arch.tar.zst"; then \
+		echo "error: runtime/desktop-runtime-linux-$$arch.tar.zst does not match the build output; run 'make runtime-module' and commit" >&2; \
+		rm -f "$$tmp"; exit 1; \
+	fi; \
+	rm -f "$$tmp"
+

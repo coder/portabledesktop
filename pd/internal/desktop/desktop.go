@@ -157,6 +157,12 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		opts.XvncArgs,
 	)
 
+	// Slim runtimes ship an unwrapped Xvnc that needs the keymap dir
+	// passed explicitly.
+	if xkbDir := runtime.XKBDir(runtimeDir); xkbDir != "" {
+		xvncArgs = append(xvncArgs, "-xkbdir", xkbDir)
+	}
+
 	// 4. Spawn Xvnc.
 	xvncBin := runtime.ResolveRuntimeBinary(runtimeDir, "Xvnc")
 	xvncLog, err := os.OpenFile(
@@ -200,7 +206,9 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 	// 6. Optionally start openbox (defaults to ON, matching TS
 	// behavior where openbox is started unless explicitly disabled).
 	var openboxPid int
-	if opts.Openbox == nil || *opts.Openbox {
+	// The window manager is optional: slim runtimes do not bundle it and
+	// applications still render without one.
+	if (opts.Openbox == nil || *opts.Openbox) && runtime.HasBinary(runtimeDir, "openbox") {
 		openboxBin := runtime.ResolveRuntimeBinary(runtimeDir, "openbox")
 		openboxLog, err := os.OpenFile(
 			filepath.Join(sessionDir, "openbox.log"),
@@ -267,7 +275,11 @@ func Start(runtimeDir string, opts StartOptions) (*Desktop, error) {
 		}
 	}
 	if err := d.SetBackground(*opts.Background); err != nil {
-		return nil, fmt.Errorf("set background: %w", err)
+		// A missing wallpaper tool only affects cosmetics.
+		var unavailable *runtime.ErrToolUnavailable
+		if !errors.As(err, &unavailable) {
+			return nil, fmt.Errorf("set background: %w", err)
+		}
 	}
 
 	return d, nil
@@ -343,6 +355,9 @@ func (d *Desktop) runTool(name string, args []string) error {
 // executes it, and returns its combined stdout. Returns an error if
 // the command exits with a non-zero status.
 func (d *Desktop) runToolCapture(name string, args []string) (string, error) {
+	if !runtime.HasBinary(d.RuntimeDir, name) {
+		return "", &runtime.ErrToolUnavailable{Tool: name}
+	}
 	bin := runtime.ResolveRuntimeBinary(d.RuntimeDir, name)
 	cmd := exec.Command(bin, args...)
 	cmd.Env = d.Env()

@@ -77,6 +77,12 @@ jobs:
       - name: Build Go binary
         run: make embed build-linux-${{ matrix.go_arch }}
 
+      # The slim binary embeds the minimal static runtime from runtime/
+      # instead of the Nix runtime. Built after the full binary because both
+      # stage their archive at pd/cmd/portabledesktop/runtime.tar.zst.
+      - name: Build slim Go binary
+        run: make build-slim-linux-${{ matrix.go_arch }}
+
       - name: Stage release files
         shell: bash
         run: |
@@ -90,6 +96,8 @@ jobs:
           cp result/manifest.json "${out_dir}/portabledesktop-linux-${arch}-manifest.json"
           cp pd/dist/portabledesktop-linux-${{ matrix.go_arch }} "${out_dir}/portabledesktop-linux-${arch}"
           chmod 0755 "${out_dir}/portabledesktop-linux-${arch}"
+          cp pd/dist/portabledesktop-slim-linux-${{ matrix.go_arch }} "${out_dir}/portabledesktop-slim-linux-${arch}"
+          chmod 0755 "${out_dir}/portabledesktop-slim-linux-${arch}"
 
           (
             cd "${out_dir}"

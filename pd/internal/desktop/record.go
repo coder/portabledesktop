@@ -36,19 +36,19 @@ type RecordingOptions struct {
 
 // idleSpeedupConfig holds validated idle-speedup parameters.
 type idleSpeedupConfig struct {
-	factor          float64
-	minDurationSec  float64
-	noiseTolerance  string
+	factor         float64
+	minDurationSec float64
+	noiseTolerance string
 }
 
 // RecordingHandle represents an in-progress recording.
 type RecordingHandle struct {
-	Pid         int
-	File        string
-	LogPath     string
-	cmd         *exec.Cmd
-	desktop     *Desktop
-	idleConfig  *idleSpeedupConfig
+	Pid        int
+	File       string
+	LogPath    string
+	cmd        *exec.Cmd
+	desktop    *Desktop
+	idleConfig *idleSpeedupConfig
 }
 
 // Interval represents a time interval in seconds.
@@ -86,6 +86,9 @@ func (d *Desktop) StartRecording(opts RecordingOptions) (*RecordingHandle, error
 		return nil, fmt.Errorf("create output directory: %w", err)
 	}
 
+	if !runtime.HasBinary(d.RuntimeDir, "ffmpeg") {
+		return nil, &runtime.ErrToolUnavailable{Tool: "ffmpeg"}
+	}
 	ffmpegBin := runtime.ResolveRuntimeBinary(d.RuntimeDir, "ffmpeg")
 
 	w, h, err := d.captureSize()
@@ -271,6 +274,9 @@ func parseFreezeIntervals(output string, durationSec float64) []Interval {
 // freezedetect to find idle intervals, then a filter_complex_script
 // to speed them up.
 func (d *Desktop) speedupIdleSegments(filePath string, config idleSpeedupConfig) error {
+	if !runtime.HasBinary(d.RuntimeDir, "ffmpeg") {
+		return &runtime.ErrToolUnavailable{Tool: "ffmpeg"}
+	}
 	ffmpegBin := runtime.ResolveRuntimeBinary(d.RuntimeDir, "ffmpeg")
 
 	// Pass 1: freezedetect.
@@ -387,6 +393,9 @@ func (d *Desktop) speedupIdleSegments(filePath string, config idleSpeedupConfig)
 // getMediaDurationSeconds parses the duration from ffmpeg output for
 // the given file.
 func (d *Desktop) getMediaDurationSeconds(filePath string) (float64, error) {
+	if !runtime.HasBinary(d.RuntimeDir, "ffmpeg") {
+		return 0, &runtime.ErrToolUnavailable{Tool: "ffmpeg"}
+	}
 	ffmpegBin := runtime.ResolveRuntimeBinary(d.RuntimeDir, "ffmpeg")
 	cmd := exec.Command(ffmpegBin, "-hide_banner", "-i", filePath, "-f", "null", "-")
 	cmd.Env = d.Env()

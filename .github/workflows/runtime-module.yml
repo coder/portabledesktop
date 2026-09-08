@@ -1,0 +1,80 @@
+name: runtime-module
+
+# Verifies the minimal runtime Go module in runtime/: the committed archives
+# must be byte identical to what the Dockerfile produces on each architecture,
+# stay under the size budget, and start correctly on a glibc host.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - runtime/**
+      - .github/workflows/runtime-module.yml
+  pull_request:
+    paths:
+      - runtime/**
+      - .github/workflows/runtime-module.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: runtime/go.mod
+
+      - name: Install zstd
+        run: sudo apt-get install -y zstd
+
+      # Runs natively on both runners, so no emulation is involved.
+      - name: Rebuild and compare committed archive
+        run: make runtime-module-check
+
+      - name: Go vet and test
+        working-directory: runtime
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+      # The archive must run on a non-Alpine host: unpack it, start Xvnc with
+      # the documented arguments and check for the RFB banner and a clean
+      # keymap compile.
+      - name: Smoke test Xvnc on glibc host
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          tar --zstd -xf "runtime/desktop-runtime-linux-${ARCH}.tar.zst" -C "$dir"
+          file "$dir/bin/Xvnc" | grep -q "statically linked"
+          PATH="$dir/bin:$PATH" "$dir/bin/Xvnc" :77 -rfbport 5977 -localhost -SecurityTypes None \
+            -AlwaysShared -AcceptSetDesktopSize -geometry 1280x800 -depth 24 \
+            -xkbdir "$dir/share/xkb" -desktop smoke >"$dir/xvnc.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 50); do
+            if banner="$(timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5977; head -c 12 <&3' 2>/dev/null)" && [[ "$banner" == RFB\ 003.* ]]; then
+              break
+            fi
+            sleep 0.2
+          done
+          kill "$pid" || true
+          echo "banner: ${banner:-<none>}"
+          cat "$dir/xvnc.log"
+          [[ "${banner:-}" == RFB\ 003.* ]]
+          ! grep -qE "Failed to compile keymap|Could not load keymap|Fatal server error" "$dir/xvnc.log"
