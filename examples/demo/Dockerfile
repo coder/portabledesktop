@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PORT=5190
 
