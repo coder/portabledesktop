@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	charm.land/fantasy v0.0.0-20260310103256-242e3d156af6
-	golang.org/x/image v0.37.0
+	golang.org/x/image v0.38.0
 )
 
 require (
